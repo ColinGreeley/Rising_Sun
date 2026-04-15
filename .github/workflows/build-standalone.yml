@@ -34,7 +34,9 @@ jobs:
       - name: Install Python dependencies (CPU PyTorch)
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install ".[handwriting]" fastapi uvicorn httpx lxml pyinstaller
+          pip install fastapi "uvicorn[standard]" httpx lxml Pillow transformers accelerate sentencepiece
+          pip install pymupdf rapidocr-onnxruntime opencv-python-headless numpy openpyxl pandas pyyaml rich typer
+          pip install pyinstaller
 
       - name: Build frontend
         working-directory: web/frontend
