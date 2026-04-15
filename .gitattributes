@@ -1,0 +1,2 @@
+# Git LFS — track model weights
+output/trocr_model_v3b/model.safetensors filter=lfs diff=lfs merge=lfs -text

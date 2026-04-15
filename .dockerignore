@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.egg-info
+.venv
+
+# Large data & training artifacts
+IDOC/Data/PROCESSED*
+IDOC/Data/*.xlsx
+output/trocr_model_v3b/checkpoint-*
+output/combined_training*
+output/kfold*
+output/name_ocr_model*
+output/name_failure*
+output/idoc_number*
+output/idoc_only*
+output/json_gpu*
+output/debug*
+output/*.csv
+output/*.txt
+output/*.json
+
+# Frontend node_modules (npm ci runs in Docker)
+web/frontend/node_modules
+web/frontend/dist
+
+# Config/scripts not needed at runtime
+scripts/
+config/
+*.md

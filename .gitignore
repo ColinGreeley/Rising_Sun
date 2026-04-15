@@ -1,0 +1,40 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+.tmp/
+
+# Build artifacts
+dist/
+build/
+*.tar.gz
+
+# Private client data — NEVER commit
+IDOC/
+
+# Training outputs, eval CSVs, crops (large, regeneratable)
+output/*
+!output/trocr_model_v3b/
+output/trocr_model_v3b/checkpoint-*/
+output/trocr_model_v3b/metrics.json
+
+# Uploaded test files
+web/uploads/
+
+# Frontend build output (regenerated via npm run build)
+web/frontend/dist/
+web/frontend/node_modules/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.log
+

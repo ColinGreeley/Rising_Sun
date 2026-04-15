@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rising-sun"
+version = "0.1.0"
+description = "Schema-driven OCR extraction pipeline for IDOC housing application PDFs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy",
+  "opencv-python-headless",
+  "openpyxl",
+  "pandas",
+  "pymupdf",
+  "pytesseract",
+  "pyyaml",
+  "rapidocr-onnxruntime",
+  "rich",
+  "typer",
+]
+
+[project.optional-dependencies]
+webapp = [
+  "fastapi>=0.100",
+  "httpx>=0.24",
+  "lxml>=5.0",
+  "Pillow>=10.0",
+  "torch>=2.0",
+  "transformers>=4.30",
+  "uvicorn[standard]>=0.20",
+]
+handwriting = [
+  "accelerate",
+  "easyocr",
+  "kraken",
+  "Pillow",
+  "sentencepiece",
+  "torch",
+  "transformers",
+]
+
+[project.scripts]
+rising-sun = "rising_sun.cli:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

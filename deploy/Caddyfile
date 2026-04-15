@@ -1,0 +1,6 @@
+# Replace YOUR_DOMAIN with your actual domain, e.g. risingsun.example.com
+# Caddy automatically provisions HTTPS via Let's Encrypt.
+
+YOUR_DOMAIN {
+	reverse_proxy app:8000
+}
