@@ -54,9 +54,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install fastapi "uvicorn[standard]" httpx lxml Pillow python-multipart transformers accelerate sentencepiece
-          python -m pip install pymupdf rapidocr-onnxruntime opencv-python-headless numpy openpyxl pandas pyyaml rich typer
-          python -m pip install pyinstaller
+          python -m pip install -e ".[webapp]"
+          python -m pip install accelerate sentencepiece pyinstaller
+
+      - name: Verify packaged Python dependencies
+        run: |
+          python -c "import pytesseract; import sys; sys.path.insert(0, 'src'); import rising_sun.ocr"
 
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm --clean rising_sun.spec
