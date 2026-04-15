@@ -4,9 +4,15 @@ If you are a Windows user who just wants to run the app, stop here and use the
 GitHub release instead of this guide:
 
 1. Open the repository's Releases page.
-2. Download `RisingSun-windows-x86_64.zip`.
-3. Extract it.
-4. Run `RisingSun.exe`.
+2. Download `RisingSun-windows-x86_64-setup.exe`.
+3. Run the installer.
+4. Launch Rising Sun from the Start menu or desktop shortcut.
+
+Portable fallback:
+
+- Download `RisingSun-windows-x86_64.zip`.
+- Extract it.
+- Run `RisingSun.exe`.
 
 This file is for developers who need to build from source or publish releases.
 
@@ -177,6 +183,7 @@ git push origin v1.0.0
 
 Expected release assets:
 
+- `RisingSun-windows-x86_64-setup.exe`
 - `RisingSun-windows-x86_64.zip`
 - `RisingSun-linux-x86_64.tar.gz`
 

@@ -25,12 +25,14 @@ resident on the IDOC website, and cross-checks the name — all in one step.
 Use the GitHub release. Do not build from source unless you are developing.
 
 1. Open the [Releases](../../releases) page.
-2. Download `RisingSun-windows-x86_64.zip` from the latest release.
-3. Right-click the zip, choose **Extract All**, and open the extracted `RisingSun` folder.
-4. Double-click `RisingSun.exe`.
+2. Download `RisingSun-windows-x86_64-setup.exe` from the latest release.
+3. Run the installer.
+4. Launch Rising Sun from the desktop shortcut or Start menu.
 5. If Windows SmartScreen appears, click **More info** and then **Run anyway**.
 
 The app starts a local server and opens your browser automatically.
+
+If you prefer a portable build, use `RisingSun-windows-x86_64.zip` instead.
 
 ### Option A: Pre-built standalone (recommended)
 
@@ -42,7 +44,8 @@ Download the latest release from the
 tar xzf RisingSun-linux-x86_64.tar.gz
 ./RisingSun/RisingSun
 
-# Windows — extract the .zip and double-click RisingSun.exe
+# Windows — run RisingSun-windows-x86_64-setup.exe
+# Portable fallback — extract the .zip and double-click RisingSun.exe
 ```
 
 The app opens a browser tab automatically.

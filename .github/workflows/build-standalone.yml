@@ -64,12 +64,32 @@ jobs:
         run: |
           Compress-Archive -Path dist\RisingSun -DestinationPath ${{ matrix.artifact }}.zip
 
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\installer | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) {
+            throw "ISCC not found at $iscc"
+          }
+
+          $sourceDir = (Resolve-Path 'dist\RisingSun').Path
+          $outputDir = (Resolve-Path 'dist\installer').Path
+
+          & $iscc "/DMyAppVersion=${{ github.ref_name }}" "/DSourceDir=$sourceDir" "/DOutputDir=$outputDir" "/DOutputBaseFilename=RisingSun-windows-x86_64-setup" "packaging\windows\RisingSun.iss"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
             ${{ matrix.artifact }}.tar.gz
             ${{ matrix.artifact }}.zip
+            dist/installer/*.exe
           if-no-files-found: error
 
   release:
