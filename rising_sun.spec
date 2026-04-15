@@ -90,7 +90,11 @@ hiddenimports = [
 hiddenimports += collect_submodules("rapidocr_onnxruntime")
 hiddenimports += collect_submodules("fastapi")
 hiddenimports += collect_submodules("starlette")
-hiddenimports += collect_submodules("transformers")
+hiddenimports += collect_submodules("transformers.generation")
+hiddenimports += collect_submodules("transformers.models.roberta")
+hiddenimports += collect_submodules("transformers.models.trocr")
+hiddenimports += collect_submodules("transformers.models.vision_encoder_decoder")
+hiddenimports += collect_submodules("transformers.models.vit")
 
 a = Analysis(
     [str(ROOT / "launcher.py")],
