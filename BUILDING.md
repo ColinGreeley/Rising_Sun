@@ -13,7 +13,7 @@ creating standalone executables, and Docker deployment.
 ## 1. Clone and Set Up
 
 ```bash
-git clone https://github.com/<owner>/Rising_Sun.git
+git clone https://github.com/ColinGreeley/Rising_Sun.git
 cd Rising_Sun
 
 # Pull LFS files (236 MB model weights)
