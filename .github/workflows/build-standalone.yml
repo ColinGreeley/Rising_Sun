@@ -38,12 +38,16 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Install frontend dependencies
+        working-directory: web/frontend
+        run: |
+          npm install --no-audit --no-fund
+
       - name: Build frontend
         working-directory: web/frontend
         env:
           VITE_API_BASE_URL: ""
         run: |
-          npm ci --no-audit --no-fund
           npm run build
 
       - name: Install Python dependencies (CPU PyTorch)
