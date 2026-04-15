@@ -1,5 +1,15 @@
 # Building from Source
 
+If you are a Windows user who just wants to run the app, stop here and use the
+GitHub release instead of this guide:
+
+1. Open the repository's Releases page.
+2. Download `RisingSun-windows-x86_64.zip`.
+3. Extract it.
+4. Run `RisingSun.exe`.
+
+This file is for developers who need to build from source or publish releases.
+
 This guide covers building the Rising Sun IDOC Lookup app from source,
 creating standalone executables, and Docker deployment.
 
@@ -157,14 +167,21 @@ TrOCR inference averages 164 ms per crop on CPU.
 
 The repo includes a GitHub Actions workflow at
 `.github/workflows/build-standalone.yml` that builds for both Linux and
-Windows automatically on tag push:
+Windows automatically on tag push and publishes the archives to a GitHub
+Release:
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-This creates a GitHub Release with downloadable archives for both platforms.
+Expected release assets:
+
+- `RisingSun-windows-x86_64.zip`
+- `RisingSun-linux-x86_64.tar.gz`
+
+If a tag exists but no release appears, the workflow failed and you should check
+the Actions tab for that tag run.
 
 ## Environment Variables
 

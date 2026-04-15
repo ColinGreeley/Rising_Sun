@@ -1,5 +1,8 @@
 name: Build standalone executables
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
   push:
@@ -8,6 +11,7 @@ on:
 
 jobs:
   build:
+    name: Build ${{ matrix.artifact }}
     strategy:
       matrix:
         include:
@@ -33,10 +37,11 @@ jobs:
 
       - name: Install Python dependencies (CPU PyTorch)
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install fastapi "uvicorn[standard]" httpx lxml Pillow transformers accelerate sentencepiece
-          pip install pymupdf rapidocr-onnxruntime opencv-python-headless numpy openpyxl pandas pyyaml rich typer
-          pip install pyinstaller
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install fastapi "uvicorn[standard]" httpx lxml Pillow transformers accelerate sentencepiece
+          python -m pip install pymupdf rapidocr-onnxruntime opencv-python-headless numpy openpyxl pandas pyyaml rich typer
+          python -m pip install pyinstaller
 
       - name: Build frontend
         working-directory: web/frontend
@@ -67,10 +72,21 @@ jobs:
             ${{ matrix.artifact }}.zip
           if-no-files-found: error
 
-      - name: Upload to release
-        if: startsWith(github.ref, 'refs/tags/v')
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: RisingSun-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ${{ matrix.artifact }}.tar.gz
-            ${{ matrix.artifact }}.zip
+          files: release-assets/*
+          generate_release_notes: true

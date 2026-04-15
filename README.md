@@ -20,7 +20,19 @@ resident on the IDOC website, and cross-checks the name — all in one step.
 
 ## Quick Start
 
-### Option A: Pre-built standalone (easiest)
+### Windows users
+
+Use the GitHub release. Do not build from source unless you are developing.
+
+1. Open the [Releases](../../releases) page.
+2. Download `RisingSun-windows-x86_64.zip` from the latest release.
+3. Right-click the zip, choose **Extract All**, and open the extracted `RisingSun` folder.
+4. Double-click `RisingSun.exe`.
+5. If Windows SmartScreen appears, click **More info** and then **Run anyway**.
+
+The app starts a local server and opens your browser automatically.
+
+### Option A: Pre-built standalone (recommended)
 
 Download the latest release from the
 [Releases](../../releases) page, extract, and run:
@@ -35,7 +47,7 @@ tar xzf RisingSun-linux-x86_64.tar.gz
 
 The app opens a browser tab automatically.
 
-### Option B: Run from source
+### Option B: Run from source (developers)
 
 ```bash
 # 1. Clone (includes model weights via Git LFS)
