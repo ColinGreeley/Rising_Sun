@@ -10,13 +10,41 @@ creating standalone executables, and Docker deployment.
 - **Git LFS** (the TrOCR model weights are tracked with LFS)
 - **Conda** (recommended) or virtualenv
 
+### Installing Git LFS
+
+Git LFS is required to download the 236 MB TrOCR model weights.
+
+**Ubuntu / Debian:**
+```bash
+sudo apt-get install -y git-lfs
+```
+
+**macOS (Homebrew):**
+```bash
+brew install git-lfs
+```
+
+**Windows:**
+```powershell
+winget install GitHub.GitLFS
+```
+
+**Conda (any platform):**
+```bash
+conda install -c conda-forge git-lfs
+```
+
 ## 1. Clone and Set Up
 
 ```bash
+git lfs install   # one-time setup — must run BEFORE cloning
 git clone https://github.com/ColinGreeley/Rising_Sun.git
 cd Rising_Sun
+```
 
-# Pull LFS files (236 MB model weights)
+If you already cloned without LFS, pull the model weights:
+
+```bash
 git lfs install
 git lfs pull
 ```
