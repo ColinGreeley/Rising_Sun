@@ -7,8 +7,17 @@ import numpy as np
 import pymupdf
 
 
-def render_pdf_page(pdf_path: Path, dpi: int, page_number: int = 0) -> np.ndarray:
-    document = pymupdf.open(pdf_path)
+PdfSource = Path | str | bytes
+
+
+def _open_pdf_document(pdf_source: PdfSource) -> pymupdf.Document:
+    if isinstance(pdf_source, (bytes, bytearray)):
+        return pymupdf.open(stream=bytes(pdf_source), filetype="pdf")
+    return pymupdf.open(pdf_source)
+
+
+def render_pdf_page(pdf_source: PdfSource, dpi: int, page_number: int = 0) -> np.ndarray:
+    document = _open_pdf_document(pdf_source)
     scale = dpi / 72.0
     matrix = pymupdf.Matrix(scale, scale)
     page = document.load_page(page_number)
@@ -18,8 +27,8 @@ def render_pdf_page(pdf_path: Path, dpi: int, page_number: int = 0) -> np.ndarra
     return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
 
-def render_pdf_pages(pdf_path: Path, dpi: int) -> list[np.ndarray]:
-    document = pymupdf.open(pdf_path)
+def render_pdf_pages(pdf_source: PdfSource, dpi: int) -> list[np.ndarray]:
+    document = _open_pdf_document(pdf_source)
     scale = dpi / 72.0
     matrix = pymupdf.Matrix(scale, scale)
     pages: list[np.ndarray] = []

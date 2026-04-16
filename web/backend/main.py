@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -259,86 +258,82 @@ def _extract_from_pdf(content: bytes) -> dict[str, Any]:
 
     # Fall back to OCR strategies for scanned PDFs
     if not candidates:
-        with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
-            tmp.write(content)
-            tmp.flush()
-            pdf_path = Path(tmp.name)
+        # Render from the uploaded bytes directly so Windows file locking does
+        # not block PyMuPDF from reopening a still-open temporary file.
+        page_image = render_pdf_page(content, dpi=225, page_number=0)
+        raw_capture, candidates = _extract_from_region_crop(page_image)
+        if candidates:
+            extraction_method = "region_crop_225dpi"
 
-            # Strategy 1: Region crop at 225 DPI
-            page_image = render_pdf_page(pdf_path, dpi=225, page_number=0)
-            raw_capture, candidates = _extract_from_region_crop(page_image)
+        # Strategy 2: Full-page OCR at 225 DPI
+        if not candidates:
+            ocr_text = ocr.read_text(page_image, multiline=True).text
+            raw_capture, candidates = _extract_idoc_candidates_from_text(ocr_text)
             if candidates:
-                extraction_method = "region_crop_225dpi"
+                extraction_method = "base_225dpi"
 
-            # Strategy 2: Full-page OCR at 225 DPI
-            if not candidates:
-                ocr_text = ocr.read_text(page_image, multiline=True).text
-                raw_capture, candidates = _extract_idoc_candidates_from_text(ocr_text)
-                if candidates:
-                    extraction_method = "base_225dpi"
+        # Strategy 2b: CLAHE on 225 DPI crop
+        if not candidates:
+            crop_225 = _crop_idoc_region(page_image, IDOC_CROP_DEFAULT)
+            gray_225 = cv2.cvtColor(crop_225, cv2.COLOR_BGR2GRAY)
+            clahe_225 = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            enhanced_225 = clahe_225.apply(gray_225)
+            clahe_img_225 = cv2.cvtColor(enhanced_225, cv2.COLOR_GRAY2BGR)
+            ocr_text = ocr.read_text(clahe_img_225, multiline=True).text
+            raw_cl, cands_cl = _extract_idoc_candidates_from_text(ocr_text)
+            if cands_cl:
+                raw_capture, candidates = raw_cl, cands_cl
+                extraction_method = "clahe_crop_225dpi"
 
-            # Strategy 2b: CLAHE on 225 DPI crop
-            if not candidates:
-                crop_225 = _crop_idoc_region(page_image, IDOC_CROP_DEFAULT)
-                gray_225 = cv2.cvtColor(crop_225, cv2.COLOR_BGR2GRAY)
-                clahe_225 = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-                enhanced_225 = clahe_225.apply(gray_225)
-                clahe_img_225 = cv2.cvtColor(enhanced_225, cv2.COLOR_GRAY2BGR)
-                ocr_text = ocr.read_text(clahe_img_225, multiline=True).text
-                raw_cl, cands_cl = _extract_idoc_candidates_from_text(ocr_text)
-                if cands_cl:
-                    raw_capture, candidates = raw_cl, cands_cl
-                    extraction_method = "clahe_crop_225dpi"
+        # Strategy 3: Region crop at 300 DPI with CLAHE
+        if not candidates:
+            page_300 = render_pdf_page(content, dpi=300, page_number=0)
+            raw_300, cands_300 = _extract_from_region_crop(page_300)
+            if cands_300:
+                raw_capture, candidates = raw_300, cands_300
+                extraction_method = "region_crop_300dpi"
+            else:
+                crop_300 = _crop_idoc_region(page_300, IDOC_CROP_DEFAULT)
+                gray = cv2.cvtColor(crop_300, cv2.COLOR_BGR2GRAY)
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                enhanced = clahe.apply(gray)
+                clahe_img = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+                ocr_text = ocr.read_text(clahe_img, multiline=True).text
+                raw_c, cands_c = _extract_idoc_candidates_from_text(ocr_text)
+                if cands_c:
+                    raw_capture, candidates = raw_c, cands_c
+                    extraction_method = "clahe_crop_300dpi"
 
-            # Strategy 3: Region crop at 300 DPI with CLAHE
-            if not candidates:
-                page_300 = render_pdf_page(pdf_path, dpi=300, page_number=0)
-                raw_300, cands_300 = _extract_from_region_crop(page_300)
-                if cands_300:
-                    raw_capture, candidates = raw_300, cands_300
-                    extraction_method = "region_crop_300dpi"
-                else:
-                    crop_300 = _crop_idoc_region(page_300, IDOC_CROP_DEFAULT)
-                    gray = cv2.cvtColor(crop_300, cv2.COLOR_BGR2GRAY)
-                    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-                    enhanced = clahe.apply(gray)
-                    clahe_img = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
-                    ocr_text = ocr.read_text(clahe_img, multiline=True).text
-                    raw_c, cands_c = _extract_idoc_candidates_from_text(ocr_text)
-                    if cands_c:
-                        raw_capture, candidates = raw_c, cands_c
-                        extraction_method = "clahe_crop_300dpi"
+        # Strategy 4a: Region crop at 400 DPI
+        if not candidates:
+            page_400 = render_pdf_page(content, dpi=400, page_number=0)
+            raw_400, cands_400 = _extract_from_region_crop(page_400)
+            if cands_400:
+                raw_capture, candidates = raw_400, cands_400
+                extraction_method = "region_crop_400dpi"
 
-            # Strategy 4a: Region crop at 400 DPI
-            if not candidates:
-                page_400 = render_pdf_page(pdf_path, dpi=400, page_number=0)
-                raw_400, cands_400 = _extract_from_region_crop(page_400)
-                if cands_400:
-                    raw_capture, candidates = raw_400, cands_400
-                    extraction_method = "region_crop_400dpi"
+        # Strategy 4b: 400 DPI + binary threshold
+        if not candidates:
+            crop_400 = _crop_idoc_region(page_400, IDOC_CROP_DEFAULT)
+            gray_400 = cv2.cvtColor(crop_400, cv2.COLOR_BGR2GRAY)
+            _, binary = cv2.threshold(gray_400, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            binary_img = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+            ocr_text = ocr.read_text(binary_img, multiline=True).text
+            raw_b, cands_b = _extract_idoc_candidates_from_text(ocr_text)
+            if cands_b:
+                raw_capture, candidates = raw_b, cands_b
+                extraction_method = "binary_crop_400dpi"
 
-            # Strategy 4b: 400 DPI + binary threshold
-            if not candidates:
-                crop_400 = _crop_idoc_region(page_400, IDOC_CROP_DEFAULT)
-                gray_400 = cv2.cvtColor(crop_400, cv2.COLOR_BGR2GRAY)
-                _, binary = cv2.threshold(gray_400, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                binary_img = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
-                ocr_text = ocr.read_text(binary_img, multiline=True).text
-                raw_b, cands_b = _extract_idoc_candidates_from_text(ocr_text)
-                if cands_b:
-                    raw_capture, candidates = raw_b, cands_b
-                    extraction_method = "binary_crop_400dpi"
+        # Strategy 5: TrOCR fine-tuned model
+        trocr_cands = _trocr_extract_candidates(page_image)
+        for tc in trocr_cands:
+            if tc not in candidates:
+                candidates.append(tc)
+        if trocr_cands:
+            extraction_method = f"{extraction_method}+trocr" if extraction_method != "none" else "trocr"
 
-            # Strategy 5: TrOCR fine-tuned model
-            trocr_cands = _trocr_extract_candidates(page_image)
-            for tc in trocr_cands:
-                if tc not in candidates:
-                    candidates.append(tc)
-            if trocr_cands:
-                extraction_method = f"{extraction_method}+trocr" if extraction_method != "none" else "trocr"
-
-            # Extract applicant name via TrOCR for cross-check
-            ocr_name = _trocr_extract_name(page_image)
+        # Extract applicant name via TrOCR for cross-check
+        ocr_name = _trocr_extract_name(page_image)
 
     # Filter: require 5+ digit candidates
     candidates = filter_candidates_by_length(candidates)
