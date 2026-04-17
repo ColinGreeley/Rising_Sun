@@ -1,11 +1,13 @@
 # Rising Sun — IDOC Housing Application OCR
 
-A local-first web application that extracts **IDOC numbers** and **applicant names**
-from scanned Idaho Department of Correction housing application PDFs, then verifies
-them against the public IDOC resident/client search.
+A local-first web application that extracts **IDOC numbers**, **applicant names**,
+and **RSO (Registered Sex Offender) status** from scanned Idaho Department of
+Correction housing application PDFs, then verifies them against the public IDOC
+resident/client search.
 
-Upload a PDF → the app OCRs the document, extracts the IDOC number, looks up the
-resident on the IDOC website, and cross-checks the name — all in one step.
+Upload a PDF → the app OCRs the document, extracts the IDOC number, detects the
+RSO checkbox, looks up the resident on the IDOC website, and cross-checks the
+name — all in one step.
 
 ## Features
 
@@ -15,7 +17,7 @@ resident on the IDOC website, and cross-checks the name — all in one step.
   real housing-application handwriting for IDOC numbers and applicant names
 - **RSO checkbox detection** — template-matching detector identifies the
   Registered Sex Offender checkbox across multiple form versions (V1 & V2)
-  and pages, with 82.8% balanced accuracy on 3,000+ forms
+  and pages, with no ML model required
 - **Live IDOC verification** — candidate numbers are checked against
   `idoc.idaho.gov` and matched by name (nickname-aware, order-agnostic)
 - **Green / Yellow / Red status** — instant confidence signal per document
@@ -57,7 +59,7 @@ The app opens a browser tab automatically.
 
 ```bash
 # 1. Clone (includes model weights via Git LFS)
-git clone https://github.com/<owner>/Rising_Sun.git
+git clone https://github.com/ColinGreeley/Rising_Sun.git
 cd Rising_Sun
 git lfs pull
 
@@ -137,58 +139,85 @@ See [BUILDING.md](BUILDING.md) for detailed instructions on:
 
 ## Accuracy
 
-Batch evaluation on 3,019 matched housing applications (2025 + 2026):
-- **IDOC number extraction: 99%** top-1 accuracy
-- **RSO checkbox detection: 82.8%** balanced accuracy
-  - Template V1: 97.5% bal. acc. (345 forms)
-  - Template V2: 96.6% bal. acc. (1,197 forms)
-  - Sensitivity: 66.7% · Specificity: 99.0%
+Evaluated on 3,019 matched housing applications from the 2025 and 2026 corpus.
+
+### IDOC Number Extraction
+
+| Metric | Result |
+|---|---|
+| Top-1 accuracy | **~99%** |
+| Method | Multi-strategy OCR + TrOCR ensemble |
+
+The pipeline tries embedded text, region-crop OCR at 225/300/400 DPI (with
+CLAHE and binary-threshold variants), and a fine-tuned TrOCR model. Regex +
+digit normalization produces 5–6 digit candidates which are verified against
+the IDOC website.
+
+### RSO Checkbox Detection
+
+| Metric | Result |
+|---|---|
+| **Overall balanced accuracy** | **82.8%** |
+| Overall accuracy | 94.8% |
+| Sensitivity (recall for RSO = Yes) | 66.7% |
+| Specificity (recall for RSO = No) | 99.0% |
+| TP / TN / FP / FN | 258 / 2,605 / 27 / 129 |
+
+**Breakdown by detection method:**
+
+| Method | Forms | Bal. Acc. | TP | TN | FP | FN |
+|---|---|---|---|---|---|---|
+| Template V1 | 345 | 97.5% | 81 | 255 | 7 | 2 |
+| Template V2 | 1,197 | 96.6% | 177 | 991 | 20 | 9 |
+| Default (no match) | 1,477 | 50.0% | 0 | 1,359 | 0 | 118 |
+
+When the template matcher finds the "sex offender" question text (51% of
+forms), accuracy is 96–97%. The remaining 49% of forms fail to match either
+template and default to "No", which is correct for the vast majority but
+misses 118 true positives.
+
+**Breakdown by year:**
+
+| Year | Forms | Bal. Acc. |
+|---|---|---|
+| 2025 | 2,496 | 83.5% |
+| 2026 | 523 | 80.3% |
+
+### Applicant Name OCR
+
+| Metric | Result (100-doc benchmark) |
+|---|---|
+| Any-token match | 57/97 (58.8%) |
+| First + last name match | 37/97 (38.1%) |
+| Exact match | ~21% |
+
+Name extraction uses a wider crop + page-text regex candidate ensemble.
+Printed/digital forms perform well; handwritten names remain model-limited.
+Nine alternative approaches were evaluated (Tesseract, EasyOCR, Kraken, docTR,
+fine-tuned TrOCR at two dataset sizes, higher DPI, PaddleOCR) — none improved
+over the RapidOCR ensemble baseline for handwritten input.
+
+## Output Shape
+
+Each PDF produces one JSON result containing:
+
+- `source_pdf` — original file path
+- `template` — extraction template name
+- `page_count` — rendered page count
+- `field_results` — flat field-by-field extraction values with confidence and metadata
+- `extracted` — nested structured data assembled from field keys
+- `page_raw_text` — full-page OCR text for manual fallback
+
+Batch runs also write `review.csv` listing blank text fields, low-confidence
+text fields, and unresolved checkbox fields for manual review.
+
+## Notes
+
+- The extraction template is intentionally editable. If a region is off, adjust
+  the normalized coordinates in `config/idoc_application_template.yml`.
+- The corpus may contain non-IDOC PDFs. Those are classified and returned as
+  unsupported documents instead of being forced through the IDOC template.
 
 ## License
 
 Private — not currently open-source. Contact the repository owner for access.
-
-Export the worst handwritten-name failures from a benchmark CSV for targeted relabeling:
-
-```bash
-/home/cgreeley/anaconda3/envs/rising_sun/bin/python -m rising_sun.cli export-name-failure-crops \
-  output/name_ocr_research_100.csv \
-  --output-dir output/name_failure_crops
-```
-
-Turn that manifest into an editable one-row-per-PDF review queue:
-
-```bash
-/home/cgreeley/anaconda3/envs/rising_sun/bin/python -m rising_sun.cli build-name-review-queue \
-  output/name_failure_crops/manifest.csv
-```
-
-After marking rows as `approved` and optionally choosing a better crop variant or corrected label, convert the queue into a curated dataset bundle:
-
-```bash
-/home/cgreeley/anaconda3/envs/rising_sun/bin/python -m rising_sun.cli apply-name-review-queue \
-  output/name_failure_crops/review_queue.csv \
-  --bundle-dir output/name_failure_crops \
-  --output-dir output/name_training_dataset_reviewed
-```
-
-## Output Shape
-
-Each PDF produces one JSON file containing:
-
-- `source_pdf`: original file path
-- `template`: extraction template name
-- `page_count`: rendered page count
-- `field_results`: flat field-by-field extraction values with confidence and metadata
-- `extracted`: nested structured data assembled from field keys
-- `page_raw_text`: full-page OCR text for manual fallback
-
-Each run also writes `review.csv` in the output directory. It lists blank text fields, low-confidence text fields, and unresolved/conflicting yes/no checkbox fields so you can tune the template against a batch quickly.
-
-The corpus may contain non-IDOC PDFs in the same folder. Those are now classified and returned as unsupported documents instead of being forced through the IDOC template.
-
-## Notes
-
-- The template is intentionally editable. If a region is off, adjust the normalized coordinates in `config/idoc_application_template.yml`.
-- `paddleocr` was installed but is not the active backend because the current runtime on this machine throws an inference error. The pipeline defaults to `rapidocr-onnxruntime`, which is stable here.
-- The form has handwriting and checkbox noise, so expect iterative tuning on a representative sample before relying on fully unattended extraction.
