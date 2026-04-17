@@ -13,6 +13,9 @@ resident on the IDOC website, and cross-checks the name — all in one step.
   binary-threshold fallbacks for poor-quality scans
 - **Fine-tuned TrOCR** — a TrOCR-small model (v3b, 61.6M params) trained on
   real housing-application handwriting for IDOC numbers and applicant names
+- **RSO checkbox detection** — template-matching detector identifies the
+  Registered Sex Offender checkbox across multiple form versions (V1 & V2)
+  and pages, with 82.8% balanced accuracy on 3,000+ forms
 - **Live IDOC verification** — candidate numbers are checked against
   `idoc.idaho.gov` and matched by name (nickname-aware, order-agnostic)
 - **Green / Yellow / Red status** — instant confidence signal per document
@@ -89,13 +92,16 @@ The app will be available at your configured domain (see `deploy/Caddyfile`).
 ```
 Rising_Sun/
 ├── src/rising_sun/          # Core OCR extraction library
+│   ├── assets/              # Template images for RSO detection
+│   ├── rso_detector.py      # RSO checkbox detection via template matching
+│   ├── extractor.py         # Schema-driven field extraction pipeline
 │   ├── identity.py          # Name normalization, nickname mapping
 │   ├── idoc_lookup.py       # Spreadsheet-based fuzzy matching
 │   ├── ocr.py               # RapidOCR + Tesseract backends
 │   ├── pdf.py               # PDF → image rendering (PyMuPDF)
 │   └── ...                  # CLI, training, calibration modules
 ├── web/
-│   ├── backend/main.py      # FastAPI server (v0.7.0)
+│   ├── backend/main.py      # FastAPI server
 │   └── frontend/            # React + Vite + Tailwind UI
 ├── output/trocr_model_v3b/  # Fine-tuned TrOCR weights (Git LFS)
 ├── config/                  # Extraction template YAML
@@ -121,16 +127,22 @@ See [BUILDING.md](BUILDING.md) for detailed instructions on:
 3. **TrOCR Inference** — fine-tuned model reads IDOC# and name crops
 4. **Candidate Generation** — regex + digit normalization produces
    5–6 digit IDOC number candidates
-5. **Website Verification** — each candidate is checked against the
+5. **RSO Detection** — dual-template matching locates the sex-offender
+   question across form versions and pages, then scores checkbox fill
+   levels to determine Yes/No
+6. **Website Verification** — each candidate is checked against the
    IDOC resident search; results are ranked by name similarity
-6. **Name Cross-check** — applicant name from OCR is compared to the
+7. **Name Cross-check** — applicant name from OCR is compared to the
    IDOC database using nickname-aware, order-agnostic matching
 
 ## Accuracy
 
-Batch evaluation on 542 real housing applications:
-- **IDOC applications: 98.7%** (315/319)
-- Overall across all form types: 88.0% (477/542)
+Batch evaluation on 3,019 matched housing applications (2025 + 2026):
+- **IDOC number extraction: 99%** top-1 accuracy
+- **RSO checkbox detection: 82.8%** balanced accuracy
+  - Template V1: 97.5% bal. acc. (345 forms)
+  - Template V2: 96.6% bal. acc. (1,197 forms)
+  - Sensitivity: 66.7% · Specificity: 99.0%
 
 ## License
 

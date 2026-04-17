@@ -14,6 +14,8 @@ from rising_sun.name_ocr import build_name_ocr_backend
 from rising_sun.ocr import OCRTextResult, RapidOcrBackend
 from rising_sun.pdf import render_pdf_pages
 from rising_sun.rising_sun_packet import parse_rising_sun_packet
+from rising_sun.rso_detector import detect_rso_checkbox
+from rising_sun.rso_detector import detect_rso_checkbox
 
 
 BINARY_FIELD_QUESTION_HINTS: dict[str, tuple[int, str]] = {
@@ -608,6 +610,31 @@ class ApplicationExtractor:
                 **result,
             }
             assign_nested(structured, field.key, result["value"])
+
+        # RSO override: use template-matching detector at 225 DPI for reliable
+        # multi-page, multi-version checkbox detection.
+        rso_key = "requirements.sex_offender_registration"
+        if rso_key in field_results:
+            rso_pages = render_pdf_pages(pdf_path, dpi=225)
+            rso_result = detect_rso_checkbox(rso_pages)
+            answer = rso_result["prediction"]
+            rso_scores = rso_result["scores"]
+            field_results[rso_key] = {
+                "page": rso_result["page"] + 1,
+                "kind": "checkbox_group",
+                "source": f"rso_template_{rso_result['method']}",
+                "value": {
+                    "selected_options": [answer],
+                    "scores": {"yes": rso_scores["yes_score"], "no": rso_scores["no_score"]},
+                    "threshold": 0.0,
+                },
+                "confidence": rso_result["confidence"],
+            }
+            structured.setdefault("requirements", {})["sex_offender_registration"] = {
+                "selected_options": [answer],
+                "scores": {"yes": rso_scores["yes_score"], "no": rso_scores["no_score"]},
+                "threshold": 0.0,
+            }
 
         return {
             "source_pdf": str(pdf_path),

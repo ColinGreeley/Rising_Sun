@@ -35,6 +35,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "IDOC" / "Data" / "PROCESSED APPS 2026"
+DATA_DIR_2025 = Path(__file__).resolve().parent.parent / "IDOC" / "Data" / "PROCESSED APPS 2025"
 WORKBOOK = Path(__file__).resolve().parent.parent / "IDOC" / "Data" / "1. Processed Apps List.xlsx"
 
 # ---------- IDOC number region crop boxes ----------
@@ -78,39 +79,51 @@ def _split_bucket(name: str) -> str:
         return "test"
 
 
-def _load_name_ground_truth(workbook_path: Path) -> dict[str, str]:
-    """Load name ground truth from the spreadsheet. Returns {clean_name: display_name}."""
+def _load_name_ground_truth(workbook_path: Path, sheet_names: list[str] | None = None) -> dict[str, str]:
+    """Load name ground truth from the spreadsheet. Returns {clean_name: display_name}.
+
+    Loads from multiple sheets (defaults to ["2025", "2026"]).
+    """
     import openpyxl
 
+    if sheet_names is None:
+        sheet_names = ["2025", "2026"]
+
     wb = openpyxl.load_workbook(workbook_path, read_only=True, data_only=True)
-    sheet = wb["2026"]
-
-    # Find the name column
-    header = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
-    name_col = None
-    for i, h in enumerate(header):
-        if h and "name" in str(h).lower():
-            name_col = i
-            break
-
-    if name_col is None:
-        logger.warning("Could not find name column in workbook")
-        return {}
-
     names: dict[str, str] = {}
-    for row in sheet.iter_rows(min_row=2):
-        val = row[name_col].value
-        if val and isinstance(val, str) and val.strip():
-            display = val.strip()
-            # Use "First Last" format (strip middle names for label)
-            parts = display.split()
-            if len(parts) >= 2:
-                label = f"{parts[0]} {parts[-1]}"
-            else:
-                label = display
-            # Key is the clean stem name for matching
-            clean = display.lower().strip()
-            names[clean] = label
+
+    for sheet_name in sheet_names:
+        if sheet_name not in wb.sheetnames:
+            logger.warning("Sheet %s not found in workbook", sheet_name)
+            continue
+        sheet = wb[sheet_name]
+
+        # Find the name column
+        header = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+        name_col = None
+        for i, h in enumerate(header):
+            if h and "name" in str(h).lower():
+                name_col = i
+                break
+
+        if name_col is None:
+            logger.warning("Could not find name column in sheet %s", sheet_name)
+            continue
+
+        for row in sheet.iter_rows(min_row=2):
+            val = row[name_col].value
+            if val and isinstance(val, str) and val.strip():
+                display = val.strip()
+                # Use "First Last" format (strip middle names for label)
+                parts = display.split()
+                if len(parts) >= 2:
+                    label = f"{parts[0]} {parts[-1]}"
+                else:
+                    label = display
+                # Key is the clean stem name for matching
+                clean = display.lower().strip()
+                if clean not in names:
+                    names[clean] = label
 
     wb.close()
     return names
@@ -205,7 +218,8 @@ def generate_crops_for_pdf(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate combined IDOC number + name training crops")
-    parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
+    parser.add_argument("--data-dir", type=Path, default=DATA_DIR, help="Primary data directory (2026)")
+    parser.add_argument("--data-dir-2025", type=Path, default=DATA_DIR_2025, help="2025 data directory")
     parser.add_argument("--workbook", type=Path, default=WORKBOOK)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=None)
@@ -218,11 +232,14 @@ def main() -> None:
 
     # Load ground truth sources
     directory = IdocDirectory()
-    name_truth = _load_name_ground_truth(args.workbook)
+    name_truth = _load_name_ground_truth(args.workbook, sheet_names=["2025", "2026"])
     logger.info(f"Loaded {len(name_truth)} name ground truth entries")
 
-    pdfs = sorted(args.data_dir.glob("*.pdf"))
-    logger.info(f"Found {len(pdfs)} total PDFs")
+    # Gather PDFs from both directories
+    pdfs_2026 = sorted(args.data_dir.glob("*.pdf")) if args.data_dir.exists() else []
+    pdfs_2025 = sorted(args.data_dir_2025.glob("*.pdf")) if args.data_dir_2025.exists() else []
+    pdfs = pdfs_2026 + pdfs_2025
+    logger.info(f"Found {len(pdfs)} total PDFs ({len(pdfs_2026)} from 2026, {len(pdfs_2025)} from 2025)")
 
     # Filter to IDOC-layout PDFs (4-page, or explicitly IDOC-classified non-4-page)
     # Non-4-page PDFs are included only if listed in --include-extra

@@ -32,13 +32,16 @@ from rising_sun.idoc_lookup import (
     IdocDirectory,
     filter_candidates_by_length,
 )
+from rising_sun.models import NormalizedBox
+from rising_sun.name_ocr import RapidEnsembleNameOcrBackend
 from rising_sun.ocr import RapidOcrBackend
-from rising_sun.pdf import render_pdf_page
+from rising_sun.pdf import render_pdf_page, render_pdf_pages
+from rising_sun.rso_detector import detect_rso_checkbox
 
 logger = logging.getLogger(__name__)
 
 IDOC_DETAIL_URL = "https://www.idoc.idaho.gov/content/prisons/resident-client-search/details/{idoc_number}"
-REQUIRED_PAGE_COUNT = None  # Accept all page counts (was 4; now supports 2-10 page variants)
+REQUIRED_PAGE_COUNT = 4  # Only process 4-page IDOC housing applications
 MAX_CANDIDATES_TO_TRY = 6
 
 # Region crop box for the IDOC# field on page 1 of the housing application.
@@ -51,6 +54,16 @@ IDOC_CROP_TIGHT = (0.72, 0.238, 0.90, 0.298)
 TROCR_MODEL_DIR = Path(os.environ.get(
     "RISING_SUN_MODEL_DIR",
     str(Path(__file__).resolve().parent.parent.parent / "output" / "trocr_model_v3b"),
+))
+
+NUMBER_MODEL_DIR = Path(os.environ.get(
+    "RISING_SUN_NUMBER_MODEL_DIR",
+    str(Path(__file__).resolve().parent.parent.parent / "output" / "trocr_number_model_v2"),
+))
+
+NAME_MODEL_DIR = Path(os.environ.get(
+    "RISING_SUN_NAME_MODEL_DIR",
+    str(Path(__file__).resolve().parent.parent.parent / "output" / "trocr_name_model_v2"),
 ))
 
 # Name field crop boxes (from config/idoc_application_template.yml)
@@ -71,6 +84,7 @@ app.add_middleware(
 )
 
 ocr = RapidOcrBackend()
+name_ocr = RapidEnsembleNameOcrBackend(ocr, normalize_person_name)
 
 # Load IDOC directory (spreadsheet of known numbers ↔ names).
 # Gracefully degrades when the spreadsheet is unavailable (e.g. production).
@@ -86,16 +100,39 @@ except Exception:
 # Load TrOCR model at startup
 trocr_processor: TrOCRProcessor | None = None
 trocr_model: VisionEncoderDecoderModel | None = None
-if TROCR_MODEL_DIR.exists():
-    logger.info("Loading TrOCR model from %s", TROCR_MODEL_DIR)
-    trocr_processor = TrOCRProcessor.from_pretrained(str(TROCR_MODEL_DIR))
-    trocr_model = VisionEncoderDecoderModel.from_pretrained(str(TROCR_MODEL_DIR))
-    trocr_model.eval()
+number_trocr_processor: TrOCRProcessor | None = None
+number_trocr_model: VisionEncoderDecoderModel | None = None
+name_trocr_processor: TrOCRProcessor | None = None
+name_trocr_model: VisionEncoderDecoderModel | None = None
+
+
+def _load_trocr_bundle(model_dir: Path, label: str) -> tuple[TrOCRProcessor | None, VisionEncoderDecoderModel | None]:
+    if not model_dir.exists():
+        logger.warning("%s model not found at %s", label, model_dir)
+        return None, None
+    logger.info("Loading %s model from %s", label, model_dir)
+    processor = TrOCRProcessor.from_pretrained(str(model_dir))
+    model = VisionEncoderDecoderModel.from_pretrained(str(model_dir))
+    model.eval()
     if torch.cuda.is_available():
-        trocr_model = trocr_model.cuda()
-    logger.info("TrOCR model loaded (CUDA=%s)", torch.cuda.is_available())
+        model = model.cuda()
+    logger.info("%s model loaded (CUDA=%s)", label, torch.cuda.is_available())
+    return processor, model
+
+
+trocr_processor, trocr_model = _load_trocr_bundle(TROCR_MODEL_DIR, "TrOCR")
+
+if NUMBER_MODEL_DIR.exists() and NUMBER_MODEL_DIR != TROCR_MODEL_DIR:
+    number_trocr_processor, number_trocr_model = _load_trocr_bundle(NUMBER_MODEL_DIR, "TrOCR number")
 else:
-    logger.warning("TrOCR model not found at %s, running without it", TROCR_MODEL_DIR)
+    number_trocr_processor, number_trocr_model = trocr_processor, trocr_model
+
+if NAME_MODEL_DIR.exists() and NAME_MODEL_DIR != TROCR_MODEL_DIR:
+    name_trocr_processor, name_trocr_model = _load_trocr_bundle(NAME_MODEL_DIR, "TrOCR name")
+else:
+    name_trocr_processor, name_trocr_model = trocr_processor, trocr_model
+
+# RSO detection now uses template matching (rso_detector module), no model needed.
 
 # ---------------------------------------------------------------------------
 # IDOC number extraction from PDF text
@@ -186,43 +223,172 @@ def _extract_from_region_crop(page_image: np.ndarray) -> tuple[str | None, list[
     return raw or raw2, []
 
 
-def _trocr_read_crop(page_image: np.ndarray, box: tuple[float, float, float, float], max_tokens: int = 12) -> str:
+def _trocr_read_crop(
+    page_image: np.ndarray,
+    box: tuple[float, float, float, float],
+    max_tokens: int = 12,
+    processor: TrOCRProcessor | None = None,
+    model: VisionEncoderDecoderModel | None = None,
+    num_beams: int = 4,
+) -> str:
     """Run TrOCR on a single crop and return raw prediction text."""
-    if trocr_processor is None or trocr_model is None:
+    processor = processor or trocr_processor
+    model = model or trocr_model
+    if processor is None or model is None:
         return ""
     crop = _crop_idoc_region(page_image, box)
     pil_img = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-    pixel_values = trocr_processor(images=pil_img, return_tensors="pt").pixel_values
-    if next(trocr_model.parameters()).is_cuda:
+    pixel_values = processor(images=pil_img, return_tensors="pt").pixel_values
+    if next(model.parameters()).is_cuda:
         pixel_values = pixel_values.cuda()
     with torch.no_grad():
-        ids = trocr_model.generate(pixel_values, max_new_tokens=max_tokens, num_beams=4)
-    return trocr_processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
+        ids = model.generate(pixel_values, max_new_tokens=max_tokens, num_beams=num_beams)
+    return processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
+
+
+def _trocr_read_crop_multi(
+    page_image: np.ndarray,
+    box: tuple[float, float, float, float],
+    max_tokens: int = 12,
+    processor: TrOCRProcessor | None = None,
+    model: VisionEncoderDecoderModel | None = None,
+    num_beams: int = 8,
+    num_return_sequences: int = 4,
+) -> list[str]:
+    """Run TrOCR on a crop and return multiple beam hypotheses."""
+    processor = processor or trocr_processor
+    model = model or trocr_model
+    if processor is None or model is None:
+        return []
+    crop = _crop_idoc_region(page_image, box)
+    pil_img = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+    pixel_values = processor(images=pil_img, return_tensors="pt").pixel_values
+    if next(model.parameters()).is_cuda:
+        pixel_values = pixel_values.cuda()
+    with torch.no_grad():
+        ids = model.generate(
+            pixel_values,
+            max_new_tokens=max_tokens,
+            num_beams=num_beams,
+            num_return_sequences=min(num_return_sequences, num_beams),
+        )
+    return [t.strip() for t in processor.batch_decode(ids, skip_special_tokens=True)]
 
 
 def _trocr_extract_candidates(page_image: np.ndarray) -> list[str]:
-    """Run fine-tuned TrOCR on tight+default crops and return digit candidates."""
-    if trocr_processor is None or trocr_model is None:
+    """Run fine-tuned TrOCR on tight+default crops and return digit candidates.
+
+    Uses multi-beam generation and snaps results against the known IDOC
+    directory to recover from minor OCR digit errors.
+    """
+    if number_trocr_processor is None or number_trocr_model is None:
         return []
-    candidates: list[str] = []
+    raw_digits: list[str] = []
     for box in [IDOC_CROP_TIGHT, IDOC_CROP_DEFAULT]:
-        pred = _trocr_read_crop(page_image, box, max_tokens=12)
-        digits = re.sub(r"[^0-9]", "", pred)
-        if digits and 5 <= len(digits) <= 6 and digits not in candidates:
-            candidates.append(digits)
-    return candidates
+        preds = _trocr_read_crop_multi(
+            page_image,
+            box,
+            max_tokens=12,
+            processor=number_trocr_processor,
+            model=number_trocr_model,
+            num_beams=8,
+            num_return_sequences=4,
+        )
+        for pred in preds:
+            digits = re.sub(r"[^0-9]", "", pred)
+            if digits and 5 <= len(digits) <= 6 and digits not in raw_digits:
+                raw_digits.append(digits)
+
+    # Snap raw OCR digits against the known directory via fuzzy matching.
+    # Prioritise direct hits, then fuzzy matches, then raw digits.
+    snapped: list[str] = []
+    remaining: list[str] = []
+    for d in raw_digits:
+        if idoc_directory.is_known(d):
+            if d not in snapped:
+                snapped.append(d)
+        else:
+            fuzzy = idoc_directory.fuzzy_match(d)
+            if fuzzy:
+                for f in fuzzy:
+                    if f not in snapped:
+                        snapped.append(f)
+            else:
+                remaining.append(d)
+    # Append un-snapped raw digits at the end as fallback
+    for d in remaining:
+        if d not in snapped:
+            snapped.append(d)
+    return snapped
 
 
 def _trocr_extract_name(page_image: np.ndarray) -> str | None:
-    """OCR the applicant name field using TrOCR. Returns best name or None."""
-    if trocr_processor is None or trocr_model is None:
+    """OCR the applicant name field using TrOCR + RapidOCR ensemble fallback.
+
+    Generates multiple candidates from different crop regions and beam
+    hypotheses, then picks the best one that looks like a real name
+    (2+ alpha tokens).  Prefers candidates that match a known name in
+    the IDOC directory.  Falls back to the RapidOCR ensemble pipeline
+    when TrOCR alone can't find a directory-confirmed match.
+    """
+    all_name_candidates: list[str] = []
+
+    # Phase 1: TrOCR multi-beam candidates
+    if name_trocr_processor is not None and name_trocr_model is not None:
+        for box in [NAME_CROP_TIGHT, NAME_CROP_CONTEXT, NAME_CROP_WIDE]:
+            preds = _trocr_read_crop_multi(
+                page_image,
+                box,
+                max_tokens=40,
+                processor=name_trocr_processor,
+                model=name_trocr_model,
+                num_beams=4,
+                num_return_sequences=3,
+            )
+            for pred in preds:
+                pred = pred.strip()
+                if pred and len(pred) >= 3 and " " in pred and pred not in all_name_candidates:
+                    all_name_candidates.append(pred)
+
+    # Phase 2: RapidOCR ensemble candidates (always runs as fallback/supplement)
+    rapid_candidates = name_ocr.extract_candidates(
+        page_image, page_text="", box=NAME_CROP_TIGHT,
+    )
+    for rc in rapid_candidates:
+        if rc.value and rc.value not in all_name_candidates:
+            all_name_candidates.append(rc.value)
+
+    if not all_name_candidates:
         return None
-    for box in [NAME_CROP_TIGHT, NAME_CROP_CONTEXT, NAME_CROP_WIDE]:
-        pred = _trocr_read_crop(page_image, box, max_tokens=40)
-        # Basic sanity: name should have at least 2 chars and contain a space (first+last)
-        if pred and len(pred) >= 3 and " " in pred:
-            return pred
-    return None
+
+    # Prefer a candidate that matches a known name in the directory
+    for cand in all_name_candidates:
+        numbers = idoc_directory.lookup_by_name(cand)
+        if numbers:
+            return cand
+
+    # Fall back to first plausible name
+    return all_name_candidates[0]
+
+
+def _predict_rso(content: bytes) -> dict[str, Any] | None:
+    """Run template-matching RSO checkbox detection across all pages."""
+    rso_pages = render_pdf_pages(content, dpi=225)
+    rso_result = detect_rso_checkbox(rso_pages)
+    prediction = rso_result["prediction"]
+    return {
+        "prediction": prediction,
+        "decision": prediction,
+        "is_rso": prediction == "yes",
+        "needs_review": rso_result["method"] == "default",
+        "probability_yes": rso_result["scores"]["yes_score"],
+        "probability_no": rso_result["scores"]["no_score"],
+        "confidence": rso_result["confidence"],
+        "score_yes": rso_result["scores"]["yes_score"],
+        "score_no": rso_result["scores"]["no_score"],
+        "method": rso_result["method"],
+        "page": rso_result["page"],
+    }
 
 
 def _extract_from_pdf(content: bytes) -> dict[str, Any]:
@@ -247,6 +413,7 @@ def _extract_from_pdf(content: bytes) -> dict[str, Any]:
     candidates: list[str] = []
     extraction_method = "none"
     ocr_name: str | None = None
+    page_image: np.ndarray | None = None
     for page in doc:
         text = page.get_text()
         if len(text.strip()) > 50:
@@ -335,6 +502,9 @@ def _extract_from_pdf(content: bytes) -> dict[str, Any]:
         # Extract applicant name via TrOCR for cross-check
         ocr_name = _trocr_extract_name(page_image)
 
+    # RSO checkbox prediction via template matching (works on any page count)
+    rso_result = _predict_rso(content)
+
     # Filter: require 5+ digit candidates
     candidates = filter_candidates_by_length(candidates)
 
@@ -344,6 +514,7 @@ def _extract_from_pdf(content: bytes) -> dict[str, Any]:
         "candidates": candidates,
         "extraction_method": extraction_method,
         "ocr_name": ocr_name,
+        "rso": rso_result,
     }
 
 
@@ -611,6 +782,15 @@ async def extract_pdf(file: UploadFile) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="File too large (max 50 MB)")
 
     extraction = _extract_from_pdf(content)
+
+    # Reject non-4-page PDFs
+    if REQUIRED_PAGE_COUNT is not None and extraction["page_count"] != REQUIRED_PAGE_COUNT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Only {REQUIRED_PAGE_COUNT}-page IDOC housing applications are supported. "
+                   f"This PDF has {extraction['page_count']} pages.",
+        )
+
     candidates = extraction["candidates"]
     extraction_method = extraction["extraction_method"]
     ocr_name = extraction.get("ocr_name")
@@ -654,12 +834,18 @@ async def extract_pdf(file: UploadFile) -> dict[str, Any]:
         filename_name=filename_name,
     )
 
-    return {
+    response = {
         "filename": file.filename,
         "page_count": extraction["page_count"],
         "extraction_method": extraction_method,
         **result,
     }
+
+    # Include RSO prediction if available
+    if extraction.get("rso"):
+        response["rso"] = extraction["rso"]
+
+    return response
 
 
 # ---------------------------------------------------------------------------

@@ -50,6 +50,7 @@ class IdocDirectory:
 
     def _load(self, path: Path) -> None:
         import openpyxl
+        import re
 
         wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
         for sheet_name in wb.sheetnames:
@@ -61,9 +62,20 @@ class IdocDirectory:
                 num_raw = row[1]
                 if name_raw is None or num_raw is None:
                     continue
+
+                # Handle mixed formats like "RSO/123456", "123456/RSO",
+                # "Denied/100666", plain numbers, and float representations.
+                num_str = str(num_raw).strip()
+                number = None
                 try:
                     number = str(int(num_raw))
                 except (ValueError, TypeError):
+                    # Try extracting digits from mixed format (e.g. "RSO/123456")
+                    digits = re.findall(r"\d{5,6}", num_str)
+                    if digits:
+                        number = digits[0]
+
+                if number is None:
                     continue
 
                 name_str = str(name_raw).strip()

@@ -1,6 +1,7 @@
 export default function ResultView({ data }) {
   const info = data.idoc_info || {};
   const verification = data.verification || {};
+  const rso = data.rso || null;
   const hasError = !!info.error;
 
   return (
@@ -19,6 +20,27 @@ export default function ResultView({ data }) {
                 <span className="ml-2 text-xs text-gray-400">({data.extraction_method})</span>
               )}
             </p>
+            {rso && (
+              <p className="mt-1 flex items-center gap-2 flex-wrap">
+                <span
+                  className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                    rso.is_rso
+                      ? "bg-red-100 text-red-800"
+                      : rso.needs_review
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-green-100 text-green-800"
+                  }`}
+                >
+                  RSO: {rso.is_rso ? "Yes" : rso.needs_review ? "Review" : "No"}
+                </span>
+                {rso.confidence != null && (
+                  <span className="text-xs text-gray-400">
+                    {Math.round(rso.confidence * 100)}% conf
+                    {rso.method && ` · ${rso.method.replace("template_", "")}`}
+                  </span>
+                )}
+              </p>
+            )}
           </div>
           {info.idoc_url && (
             <a
@@ -158,6 +180,33 @@ export default function ResultView({ data }) {
                       ? `✓ ${verification.name_crosscheck.match_level || "match"}`
                       : "⚠ mismatch"}
                   </span>
+                </p>
+              )}
+            </div>
+          )}
+          {rso && (
+            <div className="mt-2 pt-2 border-t border-gray-100">
+              <p className="font-medium">RSO detection:</p>
+              <p className="mt-1">
+                <span className="text-gray-500">Method:</span>{" "}
+                <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">{rso.method || "N/A"}</code>
+              </p>
+              <p className="mt-0.5">
+                <span className="text-gray-500">Confidence:</span>{" "}
+                <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">{rso.confidence != null ? `${(rso.confidence * 100).toFixed(1)}%` : "N/A"}</code>
+              </p>
+              {rso.score_yes != null && (
+                <p className="mt-0.5">
+                  <span className="text-gray-500">Scores:</span>{" "}
+                  <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">
+                    Yes={(rso.score_yes * 100).toFixed(1)}% / No={(rso.score_no * 100).toFixed(1)}%
+                  </code>
+                </p>
+              )}
+              {rso.page != null && rso.page >= 0 && (
+                <p className="mt-0.5">
+                  <span className="text-gray-500">Detected on:</span>{" "}
+                  <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">Page {rso.page + 1}</code>
                 </p>
               )}
             </div>

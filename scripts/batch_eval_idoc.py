@@ -53,6 +53,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "IDOC" / "Data" / "PROCESSED APPS 2026"
+DATA_DIR_2025 = Path(__file__).resolve().parent.parent / "IDOC" / "Data" / "PROCESSED APPS 2025"
 IDOC_DETAIL_URL = "https://www.idoc.idaho.gov/content/prisons/resident-client-search/details/{idoc_number}"
 MAX_CANDIDATES_TO_TRY = 6
 REQUEST_DELAY = 0.3  # seconds between HTTP requests to be polite
@@ -63,6 +64,13 @@ IDOC_CROP_DEFAULT = (0.62, 0.24, 0.95, 0.34)
 IDOC_CROP_TIGHT = (0.72, 0.238, 0.90, 0.298)
 
 TROCR_MODEL_DIR = Path(__file__).resolve().parent.parent / "output" / "trocr_model_v3b"
+NUMBER_MODEL_DIR = Path(__file__).resolve().parent.parent / "output" / "trocr_number_model_v2"
+NAME_MODEL_DIR = Path(__file__).resolve().parent.parent / "output" / "trocr_name_model_v2"
+
+# Name field crop boxes
+NAME_CROP_TIGHT = (0.14, 0.248, 0.60, 0.282)
+NAME_CROP_CONTEXT = (0.10, 0.238, 0.64, 0.290)
+NAME_CROP_WIDE = (0.06, 0.230, 0.68, 0.300)
 
 # ---------------------------------------------------------------------------
 # Shared OCR extraction (mirrors backend logic)
@@ -125,9 +133,14 @@ def _trocr_extract_candidates(
     page_image: np.ndarray,
     processor: TrOCRProcessor,
     model: VisionEncoderDecoderModel,
+    directory: IdocDirectory | None = None,
 ) -> list[str]:
-    """Run fine-tuned TrOCR on tight crops and return digit candidates."""
-    candidates: list[str] = []
+    """Run fine-tuned TrOCR on tight crops with multi-beam and return digit candidates.
+
+    If *directory* is provided, snaps raw OCR digits to known IDOC numbers
+    via fuzzy matching before returning.
+    """
+    raw_digits: list[str] = []
     for box in [IDOC_CROP_TIGHT, IDOC_CROP_DEFAULT]:
         crop = _crop_idoc_region(page_image, box)
         pil_img = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
@@ -135,12 +148,77 @@ def _trocr_extract_candidates(
         if next(model.parameters()).is_cuda:
             pixel_values = pixel_values.cuda()
         with torch.no_grad():
-            ids = model.generate(pixel_values, max_new_tokens=12, num_beams=4)
-        pred = processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
-        digits = re.sub(r"[^0-9]", "", pred)
-        if digits and 5 <= len(digits) <= 6 and digits not in candidates:
-            candidates.append(digits)
-    return candidates
+            ids = model.generate(
+                pixel_values,
+                max_new_tokens=12,
+                num_beams=8,
+                num_return_sequences=4,
+            )
+        preds = processor.batch_decode(ids, skip_special_tokens=True)
+        for pred in preds:
+            digits = re.sub(r"[^0-9]", "", pred.strip())
+            if digits and 5 <= len(digits) <= 6 and digits not in raw_digits:
+                raw_digits.append(digits)
+
+    if directory is None:
+        return raw_digits
+
+    # Snap against known directory
+    snapped: list[str] = []
+    remaining: list[str] = []
+    for d in raw_digits:
+        if directory.is_known(d):
+            if d not in snapped:
+                snapped.append(d)
+        else:
+            fuzzy = directory.fuzzy_match(d)
+            if fuzzy:
+                for f in fuzzy:
+                    if f not in snapped:
+                        snapped.append(f)
+            else:
+                remaining.append(d)
+    for d in remaining:
+        if d not in snapped:
+            snapped.append(d)
+    return snapped
+
+
+def _trocr_extract_name(
+    page_image: np.ndarray,
+    processor: TrOCRProcessor,
+    model: VisionEncoderDecoderModel,
+    directory: IdocDirectory | None = None,
+) -> str | None:
+    """OCR the applicant name field using TrOCR with multi-beam candidates."""
+    all_name_candidates: list[str] = []
+    for box in [NAME_CROP_TIGHT, NAME_CROP_CONTEXT, NAME_CROP_WIDE]:
+        crop = _crop_idoc_region(page_image, box)
+        pil_img = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+        pixel_values = processor(images=pil_img, return_tensors="pt").pixel_values
+        if next(model.parameters()).is_cuda:
+            pixel_values = pixel_values.cuda()
+        with torch.no_grad():
+            ids = model.generate(
+                pixel_values,
+                max_new_tokens=40,
+                num_beams=4,
+                num_return_sequences=3,
+            )
+        preds = processor.batch_decode(ids, skip_special_tokens=True)
+        for pred in preds:
+            pred = pred.strip()
+            if pred and len(pred) >= 3 and " " in pred and pred not in all_name_candidates:
+                all_name_candidates.append(pred)
+    if not all_name_candidates:
+        return None
+    # Prefer directory-confirmed name
+    if directory:
+        for cand in all_name_candidates:
+            numbers = directory.lookup_by_name(cand)
+            if numbers:
+                return cand
+    return all_name_candidates[0]
 
 
 # ---------------------------------------------------------------------------
@@ -356,8 +434,10 @@ async def process_pdf(
     ocr_backend: RapidOcrBackend,
     client: httpx.AsyncClient,
     directory: IdocDirectory,
-    trocr_processor: TrOCRProcessor | None = None,
-    trocr_model: VisionEncoderDecoderModel | None = None,
+    number_processor: TrOCRProcessor | None = None,
+    number_model: VisionEncoderDecoderModel | None = None,
+    name_processor: TrOCRProcessor | None = None,
+    name_model: VisionEncoderDecoderModel | None = None,
 ) -> dict[str, Any]:
     """Process a single PDF: extract IDOC candidates, look up, verify.
 
@@ -403,22 +483,32 @@ async def process_pdf(
         )
 
     # TrOCR: add fine-tuned model predictions as additional candidates
-    if trocr_processor is not None and trocr_model is not None:
+    if number_processor is not None and number_model is not None:
         trocr_image = page_image_225 if page_image_225 is not None else render_pdf_page(pdf_path, dpi=225, page_number=0)
-        trocr_cands = _trocr_extract_candidates(trocr_image, trocr_processor, trocr_model)
+        trocr_cands = _trocr_extract_candidates(trocr_image, number_processor, number_model, directory)
         for tc in trocr_cands:
             if tc not in candidates:
                 candidates.append(tc)
         if trocr_cands and not method.startswith("trocr"):
             method = f"{method}+trocr"
 
+    # TrOCR name extraction for cross-check
+    ocr_name = None
+    if name_processor is not None and name_model is not None:
+        trocr_image = page_image_225 if page_image_225 is not None else render_pdf_page(pdf_path, dpi=225, page_number=0)
+        ocr_name = _trocr_extract_name(trocr_image, name_processor, name_model, directory)
+
     # Filter: require 5+ digit candidates
     candidates = filter_candidates_by_length(candidates)
 
     # Fuzzy match against known IDOC directory
+    # Use OCR-extracted name as additional signal when available
+    lookup_name = filename_name
+    if ocr_name and not lookup_name:
+        lookup_name = ocr_name
     directory_match = None
     if candidates:
-        best_num, match_method = directory.best_match(candidates, filename_name)
+        best_num, match_method = directory.best_match(candidates, lookup_name)
         if best_num:
             directory_match = best_num
             if best_num not in candidates:
@@ -428,8 +518,9 @@ async def process_pdf(
     # Name-based spreadsheet fallback:
     # - When OCR found nothing at all
     # - When OCR candidates exist but none confirmed by directory (likely wrong numbers)
-    if filename_name and not directory_match:
-        fb_number, fb_name = directory.name_fallback(filename_name)
+    fallback_name = filename_name or ocr_name
+    if fallback_name and not directory_match:
+        fb_number, fb_name = directory.name_fallback(fallback_name)
         if fb_number:
             if not candidates:
                 candidates = [fb_number]
@@ -443,6 +534,7 @@ async def process_pdf(
     result["num_candidates"] = len(candidates)
     result["candidates"] = ",".join(candidates[:MAX_CANDIDATES_TO_TRY])
     result["extraction_method"] = method
+    result["ocr_name"] = ocr_name or ""
 
     if not candidates:
         result["status"] = "no_candidates"
@@ -515,7 +607,26 @@ async def process_pdf(
 async def run_batch(data_dir: Path, limit: int | None, output_path: Path) -> None:
     """Run the batch evaluation on all 4-page PDFs."""
     pdfs = sorted(data_dir.glob("*.pdf"))
-    logger.info(f"Found {len(pdfs)} total PDFs in {data_dir}")
+    # Also include 2025 data directory
+    if DATA_DIR_2025.exists() and data_dir != DATA_DIR_2025:
+        pdfs_2025 = sorted(DATA_DIR_2025.glob("*.pdf"))
+        logger.info(f"Found {len(pdfs_2025)} PDFs in 2025 directory")
+        pdfs = pdfs + pdfs_2025
+    logger.info(f"Found {len(pdfs)} total PDFs")
+
+    # Filter to 4-page PDFs only
+    eligible: list[Path] = []
+    for pdf_path in pdfs:
+        try:
+            doc = pymupdf.open(pdf_path)
+            n_pages = len(doc)
+            doc.close()
+            if n_pages == 4:
+                eligible.append(pdf_path)
+        except Exception:
+            continue
+    logger.info(f"Eligible (4-page): {len(eligible)} PDFs")
+    pdfs = eligible
 
     if limit:
         pdfs = pdfs[:limit]
@@ -524,25 +635,42 @@ async def run_batch(data_dir: Path, limit: int | None, output_path: Path) -> Non
     ocr_backend = RapidOcrBackend()
     directory = IdocDirectory()
 
-    # Load TrOCR model if available
-    trocr_processor = None
-    trocr_model = None
-    if TROCR_MODEL_DIR.exists():
-        logger.info(f"Loading TrOCR model from {TROCR_MODEL_DIR}")
-        trocr_processor = TrOCRProcessor.from_pretrained(str(TROCR_MODEL_DIR))
-        trocr_model = VisionEncoderDecoderModel.from_pretrained(str(TROCR_MODEL_DIR))
-        trocr_model.eval()
+    # Load specialized number model (preferred) or fallback to multi-task model
+    number_processor = None
+    number_model = None
+    for model_dir in [NUMBER_MODEL_DIR, TROCR_MODEL_DIR]:
+        if model_dir.exists():
+            logger.info(f"Loading number TrOCR model from {model_dir}")
+            number_processor = TrOCRProcessor.from_pretrained(str(model_dir))
+            number_model = VisionEncoderDecoderModel.from_pretrained(str(model_dir))
+            number_model.eval()
+            if torch.cuda.is_available():
+                number_model = number_model.cuda()
+            logger.info("Number TrOCR model loaded")
+            break
+    if number_processor is None:
+        logger.warning("No number TrOCR model found, skipping TrOCR number extraction")
+
+    # Load specialized name model
+    name_processor = None
+    name_model = None
+    if NAME_MODEL_DIR.exists():
+        logger.info(f"Loading name TrOCR model from {NAME_MODEL_DIR}")
+        name_processor = TrOCRProcessor.from_pretrained(str(NAME_MODEL_DIR))
+        name_model = VisionEncoderDecoderModel.from_pretrained(str(NAME_MODEL_DIR))
+        name_model.eval()
         if torch.cuda.is_available():
-            trocr_model = trocr_model.cuda()
-        logger.info("TrOCR model loaded")
+            name_model = name_model.cuda()
+        logger.info("Name TrOCR model loaded")
     else:
-        logger.warning(f"TrOCR model not found at {TROCR_MODEL_DIR}, skipping")
+        logger.warning(f"Name TrOCR model not found at {NAME_MODEL_DIR}, skipping")
 
     results: list[dict[str, Any]] = []
 
     fieldnames = [
         "filename", "filename_name", "page_count",
         "raw_capture", "num_candidates", "candidates", "extraction_method",
+        "ocr_name",
         "idoc_number", "db_name", "name_match",
         "candidates_tried", "candidates_found",
         "status", "verification", "reason",
@@ -559,7 +687,7 @@ async def run_batch(data_dir: Path, limit: int | None, output_path: Path) -> Non
             for i, pdf_path in enumerate(pdfs):
                 logger.info(f"[{i+1}/{len(pdfs)}] {pdf_path.name}")
                 try:
-                    result = await process_pdf(pdf_path, ocr_backend, client, directory, trocr_processor, trocr_model)
+                    result = await process_pdf(pdf_path, ocr_backend, client, directory, number_processor, number_model, name_processor, name_model)
                 except Exception as e:
                     logger.error(f"Error processing {pdf_path.name}: {e}")
                     result = {
