@@ -666,13 +666,10 @@ async def _verify_and_lookup(
     raw_capture: str | None,
     extraction_method: str = "",
     ocr_name: str | None = None,
-    filename_name: str | None = None,
 ) -> dict[str, Any]:
     """Try candidate IDOC numbers against the IDOC website.
 
-    Returns the best match, preferring name-confirmed results.
-    Uses filename_name (from uploaded PDF name) as primary name signal,
-    falling back to ocr_name (from TrOCR) for cross-checking.
+    Returns the best match, preferring OCR-name-confirmed results.
     """
     if not candidates:
         return {
@@ -719,9 +716,8 @@ async def _verify_and_lookup(
             },
         }
 
-    # Pick the best match, preferring name-confirmed results
-    # Use filename name (more reliable) for matching, fall back to OCR name
-    match_name = filename_name or ocr_name
+    # Pick the best match, preferring OCR-name-confirmed results.
+    match_name = ocr_name
     best_candidate = None
     best_info = None
     best_sim = "none"
@@ -740,7 +736,7 @@ async def _verify_and_lookup(
     chosen_number, chosen_info = best_candidate, best_info
 
     # Name cross-check details
-    name_crosscheck: dict[str, Any] = {"ocr_name": ocr_name, "filename_name": filename_name}
+    name_crosscheck: dict[str, Any] = {"ocr_name": ocr_name}
     idoc_name = chosen_info.get("name")
     if match_name and idoc_name:
         name_crosscheck["idoc_name"] = idoc_name
@@ -794,16 +790,7 @@ async def extract_pdf(file: UploadFile) -> dict[str, Any]:
     candidates = extraction["candidates"]
     extraction_method = extraction["extraction_method"]
     ocr_name = extraction.get("ocr_name")
-
-    # Try to derive applicant name from uploaded filename.
-    # Only trust it if the stem (after stripping a trailing date) looks like
-    # a person name (at least two alphabetic tokens).  In production the
-    # filename will be something like "scan_001.pdf" and should be ignored.
-    _stem = re.sub(r"\s+\d{1,2}-\d{1,2}-\d{2,4}$", "", Path(file.filename).stem).strip()
-    _alpha_tokens = [t for t in _stem.split() if re.fullmatch(r"[A-Za-z\-']+", t)]
-    filename_name = _stem if len(_alpha_tokens) >= 2 else None
-    # Use filename name when available, otherwise fall back to OCR-extracted name
-    match_name = filename_name or ocr_name or ""
+    match_name = ocr_name or ""
 
     # Phase 2: Fuzzy match OCR candidates against known IDOC directory
     directory_match: str | None = None
@@ -831,7 +818,6 @@ async def extract_pdf(file: UploadFile) -> dict[str, Any]:
         raw_capture=extraction["raw_capture"],
         extraction_method=extraction_method,
         ocr_name=ocr_name,
-        filename_name=filename_name,
     )
 
     response = {
@@ -840,6 +826,14 @@ async def extract_pdf(file: UploadFile) -> dict[str, Any]:
         "extraction_method": extraction_method,
         **result,
     }
+
+    info = response.get("idoc_info") or {}
+    if info.get("name"):
+        response["resolved_name"] = info["name"]
+        response["resolved_name_source"] = "idoc_website"
+    elif ocr_name:
+        response["resolved_name"] = ocr_name
+        response["resolved_name_source"] = "ocr"
 
     # Include RSO prediction if available
     if extraction.get("rso"):

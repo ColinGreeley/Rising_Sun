@@ -6,7 +6,8 @@ from typing import Any
 
 from rising_sun.classification import classify_document
 from rising_sun.config_loader import load_template
-from rising_sun.identity import IdentityExtractor
+from rising_sun.identity import IdentityExtractor, normalize_person_name, person_name_key
+from rising_sun.idoc_lookup import IdocDirectory
 from rising_sun.image_ops import checkbox_score, crop_image, mostly_blank, prepare_text_crop
 from rising_sun.jotform_parser import parse_jotform_application
 from rising_sun.models import FieldSpec
@@ -319,6 +320,16 @@ def _normalize_name_value(value: str) -> str:
     return cleaned
 
 
+def _directory_display_name(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return ""
+    if "," in cleaned:
+        last, first = [part.strip() for part in cleaned.split(",", 1)]
+        cleaned = f"{first} {last}"
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _normalize_county_value(value: str) -> str:
     cleaned = _clean_capture(value).replace("_", "")
     if not cleaned:
@@ -433,6 +444,10 @@ class ApplicationExtractor:
         self.ocr = RapidOcrBackend()
         self.identity = IdentityExtractor(page_dpi=max(225, self.template.render_dpi))
         self.name_backend = name_backend
+        try:
+            self.idoc_directory = IdocDirectory()
+        except Exception:
+            self.idoc_directory = None
         self.name_ocr_backend = build_name_ocr_backend(
             name_backend,
             rapid_ocr=self.ocr,
@@ -552,6 +567,7 @@ class ApplicationExtractor:
         name_field = self.field_map.get("applicant.name")
         if name_field is not None and pages:
             name_result = self._extract_name_field_result(pages[0], page_raw_text.get("1", ""), name_field)
+            name_result = self._postprocess_name_field_result(pdf_path, identity, name_result)
             if name_result.get("value"):
                 special_text_results["applicant.name"] = dict(name_result)
                 special_text_results["additional_form.name"] = dict(name_result)
@@ -695,6 +711,61 @@ class ApplicationExtractor:
             ],
             "source": best.source,
         }
+
+    def _postprocess_name_field_result(self, pdf_path: Path, identity, name_result: dict[str, Any]) -> dict[str, Any]:
+        directory = self.idoc_directory
+        if directory is None:
+            return name_result
+
+        directory_name = ""
+        directory_source = ""
+
+        if getattr(identity, "supervision_number", ""):
+            directory_name = _directory_display_name(directory.lookup_by_number(identity.supervision_number) or "")
+            if directory_name:
+                directory_source = "directory_by_number"
+
+        if not directory_name:
+            return name_result
+
+        updated = dict(name_result)
+        updated_candidates = list(updated.get("candidates", []))
+        directory_key = person_name_key(directory_name)
+        current_value = str(updated.get("value", "") or "")
+        current_key = person_name_key(current_value)
+
+        if not current_value:
+            updated["value"] = directory_name
+            updated["confidence"] = max(float(updated.get("confidence", 0.0)), 0.85)
+            updated["source"] = directory_source
+        elif directory_key and current_key and directory_key == current_key:
+            updated["value"] = directory_name
+            updated["confidence"] = max(float(updated.get("confidence", 0.0)), 0.9)
+            updated["source"] = f"{updated.get('source', 'name_candidate_ensemble')}+{directory_source}_canonicalized"
+        elif normalize_person_name(current_value) == normalize_person_name(directory_name):
+            updated["value"] = directory_name
+            updated["confidence"] = max(float(updated.get("confidence", 0.0)), 0.9)
+            updated["source"] = f"{updated.get('source', 'name_candidate_ensemble')}+{directory_source}_canonicalized"
+        else:
+            return name_result
+
+        directory_candidate = {
+            "source": directory_source,
+            "value": directory_name,
+            "confidence": round(float(updated.get("confidence", 0.0)), 3),
+            "score": 999.0,
+        }
+        seen_values = {normalize_person_name(directory_name)}
+        deduped_candidates = [directory_candidate]
+        for candidate in updated_candidates:
+            candidate_value = str(candidate.get("value", "") or "")
+            normalized_candidate = normalize_person_name(candidate_value)
+            if not normalized_candidate or normalized_candidate in seen_values:
+                continue
+            seen_values.add(normalized_candidate)
+            deduped_candidates.append(candidate)
+        updated["candidates"] = deduped_candidates[:8]
+        return updated
 
     def _read_text_variants(self, crop, multiline: bool) -> OCRTextResult:
         variants = [

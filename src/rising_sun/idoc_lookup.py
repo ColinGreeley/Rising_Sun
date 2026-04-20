@@ -233,5 +233,5 @@ def is_valid_idoc_length(number: str) -> bool:
 
 
 def filter_candidates_by_length(candidates: list[str]) -> list[str]:
-    """Remove candidates that are too short (<5 digits) to be real IDOC numbers."""
-    return [c for c in candidates if len(c) >= MIN_IDOC_DIGITS]
+    """Keep only candidates that match the known 5-6 digit IDOC number shape."""
+    return [candidate for candidate in candidates if is_valid_idoc_length(candidate)]

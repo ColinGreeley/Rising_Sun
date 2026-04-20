@@ -214,6 +214,10 @@ def _looks_like_date_number(value: str) -> bool:
     return 1 <= month <= 12 and 1 <= day <= 31 and 2024 <= year <= 2027
 
 
+def _is_plausible_idoc_number(value: str) -> bool:
+    return value.isdigit() and 5 <= len(value) <= 6 and not _looks_like_date_number(value)
+
+
 REFERENCE_ANCHORS: dict[str, dict[str, tuple[float, float]]] = {
     "idoc_housing_application_v1": {
         "idoc": (0.317, 0.065),
@@ -717,6 +721,9 @@ class IdentityExtractor:
         extracted = self._extract_candidate_tokens(candidates)
         default_extracted = self._extract_candidate_tokens(default_crop_candidates)
 
+        extracted = [value for value in extracted if _is_plausible_idoc_number(normalize_supervision_number(value))]
+        default_extracted = [value for value in default_extracted if _is_plausible_idoc_number(normalize_supervision_number(value))]
+
         best = self._best_normalized_candidate(extracted)
         voted_best = self._best_normalized_candidate(extracted, prefer_frequency=True)
         all_counts = self._normalized_candidate_counts(extracted)
@@ -742,6 +749,10 @@ class IdentityExtractor:
             for candidate in self._ocr_crop_candidates(retry_crop):
                 high_dpi_candidates.extend(re.findall(r"[A-Za-z0-9/\\|!&$%()\[\]{}]{4,12}", candidate))
 
+        high_dpi_candidates = [
+            value for value in high_dpi_candidates if _is_plausible_idoc_number(normalize_supervision_number(value))
+        ]
+
         retry_best = self._prefer_high_dpi_consensus(best, high_dpi_candidates)
         if retry_best != best:
             return retry_best
@@ -750,7 +761,7 @@ class IdentityExtractor:
             consensus = self._idoc_left_shifted_consensus(pdf_path, registration)
             if consensus:
                 return consensus
-        return best
+        return best if _is_plausible_idoc_number(best) else ""
 
     def _idoc_left_shifted_consensus(self, pdf_path: Path, registration: LayoutRegistration) -> str:
         page = render_pdf_page(pdf_path, dpi=max(self.page_dpi, 400), page_number=0)
@@ -771,10 +782,13 @@ class IdentityExtractor:
         page_text: str,
         registration: LayoutRegistration,
     ) -> str:
+        constrain_to_idoc_shape = classification_name == "jotform_application"
         direct_pattern_candidate = ""
         pattern = re.search(r"IDOC\s*or\s*LE\s*#?\s*([A-Za-z0-9]{4,10})", page_text, flags=re.IGNORECASE)
         if pattern:
             direct_pattern_candidate = normalize_supervision_number(pattern.group(1))
+            if constrain_to_idoc_shape and not _is_plausible_idoc_number(direct_pattern_candidate):
+                direct_pattern_candidate = ""
 
         label_item = None
         for item in raw_results:
@@ -829,10 +843,17 @@ class IdentityExtractor:
         if direct_pattern_candidate:
             extracted_tokens.append(direct_pattern_candidate)
 
+        if constrain_to_idoc_shape:
+            extracted_tokens = [
+                value for value in extracted_tokens if _is_plausible_idoc_number(normalize_supervision_number(value))
+            ]
+
         best = self._best_normalized_candidate(
             extracted_tokens,
             reject_date_like=classification_name == "email_forward_application_packet",
         )
+        if constrain_to_idoc_shape:
+            return best if _is_plausible_idoc_number(best) else ""
         if classification_name != "rising_sun_application_packet":
             return best
 

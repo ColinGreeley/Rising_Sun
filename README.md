@@ -15,11 +15,17 @@ name — all in one step.
   binary-threshold fallbacks for poor-quality scans
 - **Fine-tuned TrOCR** — a TrOCR-small model (v3b, 61.6M params) trained on
   real housing-application handwriting for IDOC numbers and applicant names
+- **Roster-backed name canonicalization** — when a trusted IDOC number is
+  found, the applicant name is cross-referenced against the IDOC website
+  directory and replaced with the canonical (official) name
 - **RSO checkbox detection** — template-matching detector identifies the
   Registered Sex Offender checkbox across multiple form versions (V1 & V2)
   and pages, with no ML model required
 - **Live IDOC verification** — candidate numbers are checked against
   `idoc.idaho.gov` and matched by name (nickname-aware, order-agnostic)
+- **Tightened number trust** — IDOC number candidates are restricted to 5–6
+  digits across all extraction paths (IDOC housing form, Jotform, high-DPI
+  retry) to eliminate false positives from 7–8 digit sequences
 - **Green / Yellow / Red status** — instant confidence signal per document
 - **Standalone executable** — download and double-click, no Python required
 
@@ -128,14 +134,19 @@ See [BUILDING.md](BUILDING.md) for detailed instructions on:
    progressively aggressive image preprocessing
 3. **TrOCR Inference** — fine-tuned model reads IDOC# and name crops
 4. **Candidate Generation** — regex + digit normalization produces
-   5–6 digit IDOC number candidates
+   5–6 digit IDOC number candidates; a plausibility filter rejects
+   7–8 digit false positives across all extraction paths
 5. **RSO Detection** — dual-template matching locates the sex-offender
    question across form versions and pages, then scores checkbox fill
    levels to determine Yes/No
 6. **Website Verification** — each candidate is checked against the
    IDOC resident search; results are ranked by name similarity
-7. **Name Cross-check** — applicant name from OCR is compared to the
-   IDOC database using nickname-aware, order-agnostic matching
+7. **Name Post-processing** — when a trusted IDOC number is verified,
+   the OCR-extracted name is cross-referenced against the IDOC website
+   directory and canonicalized to the official name on file
+8. **Name Cross-check** — applicant name from OCR (or canonicalized
+   name) is compared to the IDOC database using nickname-aware,
+   order-agnostic matching
 
 ## Accuracy
 
@@ -185,11 +196,17 @@ misses 118 true positives.
 
 ### Applicant Name OCR
 
-| Metric | Result (100-doc benchmark) |
-|---|---|
-| Any-token match | 57/97 (58.8%) |
-| First + last name match | 37/97 (38.1%) |
-| Exact match | ~21% |
+| Metric | Before (OCR only) | After (+ post-processing) |
+|---|---|---|
+| Exact match | 21/98 (21.4%) | **31/98 (31.6%)** |
+| First + last name match | 37/98 (37.8%) | 37/98 (37.8%) |
+| Any-token match | 57/98 (58.2%) | 57/98 (58.2%) |
+
+Evaluated on a 100-document benchmark (98 supported templates). Post-processing
+uses roster-backed name canonicalization: when a trusted IDOC number is found
+(83/98 documents), the OCR name is cross-referenced against the IDOC website
+directory and replaced with the canonical name on file. This improved exact
+match by **+10 documents** (15 canonicalized, 10 net exact-match gains).
 
 Name extraction uses a wider crop + page-text regex candidate ensemble.
 Printed/digital forms perform well; handwritten names remain model-limited.
@@ -206,6 +223,8 @@ Each PDF produces one JSON result containing:
 - `page_count` — rendered page count
 - `field_results` — flat field-by-field extraction values with confidence and metadata
 - `extracted` — nested structured data assembled from field keys
+- `resolved_name` — canonical applicant name (from IDOC directory when available, otherwise OCR)
+- `resolved_name_source` — provenance of the resolved name (e.g. `directory_by_number_canonicalized`, `ocr`)
 - `page_raw_text` — full-page OCR text for manual fallback
 
 Batch runs also write `review.csv` listing blank text fields, low-confidence

@@ -155,15 +155,9 @@ export default function ResultView({ data }) {
               </ul>
             </>
           )}
-          {verification.name_crosscheck && (verification.name_crosscheck.ocr_name || verification.name_crosscheck.filename_name) && (
+          {verification.name_crosscheck && verification.name_crosscheck.ocr_name && (
             <div className="mt-2 pt-2 border-t border-gray-100">
               <p className="font-medium">Name cross-check:</p>
-              {verification.name_crosscheck.filename_name && (
-                <p className="mt-1">
-                  <span className="text-gray-500">Filename name:</span>{" "}
-                  <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">{verification.name_crosscheck.filename_name}</code>
-                </p>
-              )}
               {verification.name_crosscheck.ocr_name && (
                 <p className="mt-0.5">
                   <span className="text-gray-500">Form name (OCR):</span>{" "}
