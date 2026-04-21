@@ -65,12 +65,7 @@ hiddenimports = [
     "h11",
     # PDF
     "pymupdf",
-    # Our package
-    "rising_sun",
-    "rising_sun.identity",
-    "rising_sun.idoc_lookup",
-    "rising_sun.ocr",
-    "rising_sun.pdf",
+    # Our package (all submodules collected below via collect_submodules)
     # PyTorch CPU
     "torch",
     "torch.nn",
@@ -88,6 +83,7 @@ hiddenimports = [
     "numpy",
 ]
 hiddenimports += collect_submodules("rapidocr_onnxruntime")
+hiddenimports += collect_submodules("rising_sun")
 hiddenimports += collect_submodules("fastapi")
 hiddenimports += collect_submodules("starlette")
 hiddenimports += collect_submodules("transformers.generation")
