@@ -17,6 +17,9 @@ transformers_datas = collect_data_files("transformers", include_py_files=False)
 # RapidOCR ONNX models + config
 rapidocr_datas = collect_data_files("rapidocr_onnxruntime", include_py_files=False)
 
+# rising_sun package data files (template PNGs in assets/, etc.)
+rising_sun_datas = collect_data_files("rising_sun", include_py_files=False)
+
 # Our bundled data files
 datas = [
     # TrOCR model weights (only inference files, no checkpoints)
@@ -33,6 +36,7 @@ datas = [
 ]
 datas += transformers_datas
 datas += rapidocr_datas
+datas += rising_sun_datas
 
 # Hidden imports that PyInstaller's analysis misses
 hiddenimports = [
