@@ -23,6 +23,7 @@ name — all in one step.
   and pages, with no ML model required
 - **Live IDOC verification** — candidate numbers are checked against
   `idoc.idaho.gov` and matched by name (nickname-aware, order-agnostic)
+  without using the Processed Apps spreadsheet in the live web path
 - **Tightened number trust** — IDOC number candidates are restricted to 5–6
   digits across all extraction paths (IDOC housing form, Jotform, high-DPI
   retry) to eliminate false positives from 7–8 digit sequences
@@ -150,9 +151,41 @@ See [BUILDING.md](BUILDING.md) for detailed instructions on:
 
 ## Accuracy
 
-Evaluated on 3,019 matched housing applications from the 2025 and 2026 corpus.
+### Live Pipeline Validation
 
-### IDOC Number Extraction
+Full live-mode validation on the 2026 Processed Apps corpus with Processed Apps
+runtime lookup disabled.
+
+| Metric | Result |
+|---|---|
+| Total PDFs scanned | 542 |
+| Supported 4-page applications evaluated | 315 |
+| Ground-truth matches scored | 302 |
+| IDOC found rate | **315/315 (100%)** |
+| IDOC accuracy vs truth | **269/302 (89.1%)** |
+| RSO accuracy vs truth | **286/302 (94.7%)** |
+| Verification mix | **240 green / 75 yellow / 0 red** |
+
+This run uses the same backend verification path as the web app and ranks live
+database hits by OCR name similarity. It does not use the Processed Apps
+spreadsheet to recover or verify candidates during runtime. Of the 33 wrong
+IDOC matches in the scored set, 32 were already downgraded to yellow rather
+than green.
+
+Reproduce with:
+
+```bash
+conda activate rising_sun
+python scripts/eval_live_pipeline.py \
+  --years 2026 \
+  --output-csv output/live_pipeline_eval_2026_v1_3_0.csv \
+  --summary-json output/live_pipeline_eval_2026_v1_3_0_summary.json
+```
+
+### IDOC Number Extraction Benchmark
+
+Offline OCR benchmark on 3,019 matched housing applications from the 2025 and
+2026 corpus.
 
 | Metric | Result |
 |---|---|
@@ -162,7 +195,8 @@ Evaluated on 3,019 matched housing applications from the 2025 and 2026 corpus.
 The pipeline tries embedded text, region-crop OCR at 225/300/400 DPI (with
 CLAHE and binary-threshold variants), and a fine-tuned TrOCR model. Regex +
 digit normalization produces 5–6 digit candidates which are verified against
-the IDOC website.
+the IDOC website. This benchmark measures extraction quality and is not the
+same as the end-to-end live validation numbers above.
 
 ### RSO Checkbox Detection
 

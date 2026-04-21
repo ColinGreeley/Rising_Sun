@@ -190,12 +190,50 @@ Expected release assets:
 If a tag exists but no release appears, the workflow failed and you should check
 the Actions tab for that tag run.
 
+## 8. Validation and Evaluation
+
+### Live pipeline validation
+
+Use the dedicated evaluator to measure the same backend verification path used
+by the web app. This script hard-disables Processed Apps runtime lookup so the
+results reflect live behavior rather than spreadsheet-assisted recovery.
+
+```bash
+conda activate rising_sun
+
+python scripts/eval_live_pipeline.py \
+	--years 2026 \
+	--output-csv output/live_pipeline_eval_2026.csv \
+	--summary-json output/live_pipeline_eval_2026_summary.json
+```
+
+Key outputs:
+
+- Per-document CSV with predicted IDOC, name match level, verification tier, and RSO result
+- Summary JSON with aggregate IDOC and RSO accuracy metrics
+
+Supported options:
+
+- `--years 2025 2026` to run a combined corpus validation
+- `--limit N` for smoke tests or partial samples
+
+### When to enable Processed Apps lookup
+
+Processed Apps spreadsheet lookup is now opt-in outside the live web backend.
+Use it only for research, training-data generation, or backward-looking offline
+analysis.
+
+- Web backend default: disabled
+- Extractor / CLI: disabled unless `--enable-idoc-directory` is passed
+- Environment override: `RISING_SUN_ENABLE_IDOC_DIRECTORY=1`
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `RISING_SUN_MODEL_DIR` | `output/trocr_model_v3b` | Path to TrOCR model weights |
 | `RISING_SUN_FRONTEND_DIR` | `web/frontend/dist` | Path to built frontend files |
+| `RISING_SUN_ENABLE_IDOC_DIRECTORY` | `0` in live mode | Allow Processed Apps spreadsheet lookup in non-live workflows when explicitly enabled |
 | `CORS_ORIGINS` | *(empty)* | Comma-separated allowed origins |
 
 ## Troubleshooting
