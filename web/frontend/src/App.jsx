@@ -1,6 +1,6 @@
 import { useState } from "react";
 import UploadView from "./components/UploadView";
-import ResultView from "./components/ResultView";
+import ResultView, { SkeletonResultView } from "./components/ResultView";
 
 const API =
   import.meta.env.VITE_API_BASE_URL ||
@@ -65,8 +65,10 @@ export default function App() {
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-8">
-        {!result ? (
-          <UploadView onUpload={handleUpload} loading={loading} error={error} />
+        {loading ? (
+          <SkeletonResultView />
+        ) : !result ? (
+          <UploadView onUpload={handleUpload} error={error} />
         ) : (
           <ResultView data={result} />
         )}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import re
@@ -204,6 +205,14 @@ def _crop_idoc_region(
     return page_image[y1:y2, x1:x2]
 
 
+def _image_to_data_uri(img: np.ndarray) -> str | None:
+    """Encode a BGR numpy image as a base64 PNG data URI."""
+    success, buffer = cv2.imencode(".png", img)
+    if not success:
+        return None
+    return "data:image/png;base64," + base64.b64encode(buffer).decode()
+
+
 def _extract_from_region_crop(page_image: np.ndarray) -> tuple[str | None, list[str]]:
     """OCR just the IDOC# region of the page image and extract candidates."""
     # Try the default (wider) crop first
@@ -376,6 +385,18 @@ def _predict_rso(content: bytes) -> dict[str, Any] | None:
     rso_pages = render_pdf_pages(content, dpi=225)
     rso_result = detect_rso_checkbox(rso_pages)
     prediction = rso_result["prediction"]
+
+    # Crop the RSO checkbox area from the matched page for visualization.
+    # Use the dynamic crop_box computed from the actual template match location.
+    page_idx = rso_result.get("page", -1)
+    rso_page = rso_pages[page_idx] if 0 <= page_idx < len(rso_pages) else (rso_pages[0] if rso_pages else None)
+    rso_crop_image: str | None = None
+    if rso_page is not None and rso_result.get("crop_box"):
+        rso_crop_image = _image_to_data_uri(_crop_idoc_region(rso_page, rso_result["crop_box"]))
+    elif rso_page is not None:
+        # Fallback fixed crop for text-fallback detections (no template match)
+        rso_crop_image = _image_to_data_uri(_crop_idoc_region(rso_page, (0.50, 0.530, 0.75, 0.595)))
+
     return {
         "prediction": prediction,
         "decision": prediction,
@@ -388,6 +409,7 @@ def _predict_rso(content: bytes) -> dict[str, Any] | None:
         "score_no": rso_result["scores"]["no_score"],
         "method": rso_result["method"],
         "page": rso_result["page"],
+        "crop_image": rso_crop_image,
     }
 
 
@@ -502,11 +524,19 @@ def _extract_from_pdf(content: bytes) -> dict[str, Any]:
         # Extract applicant name via TrOCR for cross-check
         ocr_name = _trocr_extract_name(page_image)
 
+    # Ensure page_image is available for crop visualization (even for digital PDFs)
+    if page_image is None:
+        page_image = render_pdf_page(content, dpi=225, page_number=0)
+
     # RSO checkbox prediction via template matching (works on any page count)
     rso_result = _predict_rso(content)
 
     # Filter: require 5+ digit candidates
     candidates = filter_candidates_by_length(candidates)
+
+    # Crop visualization images
+    idoc_crop_image = _image_to_data_uri(_crop_idoc_region(page_image, IDOC_CROP_DEFAULT))
+    name_crop_image = _image_to_data_uri(_crop_idoc_region(page_image, NAME_CROP_WIDE))
 
     return {
         "page_count": page_count,
@@ -515,6 +545,8 @@ def _extract_from_pdf(content: bytes) -> dict[str, Any]:
         "extraction_method": extraction_method,
         "ocr_name": ocr_name,
         "rso": rso_result,
+        "idoc_crop_image": idoc_crop_image,
+        "name_crop_image": name_crop_image,
     }
 
 
@@ -834,6 +866,17 @@ async def extract_pdf(file: UploadFile) -> dict[str, Any]:
     elif ocr_name:
         response["resolved_name"] = ocr_name
         response["resolved_name_source"] = "ocr"
+
+    # Bundle crop images for frontend visualization
+    rso_data = extraction.get("rso") or {}
+    rso_crop = rso_data.pop("crop_image", None)
+    crop_images: dict[str, str | None] = {
+        "idoc_field": extraction.get("idoc_crop_image"),
+        "name_field": extraction.get("name_crop_image"),
+        "rso_field": rso_crop,
+    }
+    if any(v for v in crop_images.values()):
+        response["crop_images"] = crop_images
 
     # Include RSO prediction if available
     if extraction.get("rso"):

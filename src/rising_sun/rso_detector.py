@@ -103,11 +103,19 @@ def detect_rso_checkbox(page_images: list[np.ndarray]) -> dict[str, Any]:
             ys = _checkbox_score(gray, yes_box)
             ns = _checkbox_score(gray, no_box)
             best_conf = conf
-            best_info = (pg_idx, ver, ys, ns)
+            best_info = (pg_idx, ver, ys, ns, sx, sy)
 
     if best_conf >= _TMPL_CONF_THRESHOLD and best_info is not None:
-        pg_idx, ver, ys, ns = best_info
+        pg_idx, ver, ys, ns, sx, sy = best_info
         prediction = "yes" if ys > ns else "no"
+        # Crop box covering the question text + both yes/no checkboxes
+        no_off = _V1_NO_OFF if ver == "V1" else _V2_NO_OFF
+        crop_box = (
+            max(0.0, sx - 0.02),
+            max(0.0, sy - 0.025),
+            min(1.0, sx + no_off[0] + _BOX_W + 0.02),
+            min(1.0, sy + _BOX_H + 0.025),
+        )
         return {
             "prediction": prediction,
             "confidence": float(best_conf),
@@ -115,6 +123,7 @@ def detect_rso_checkbox(page_images: list[np.ndarray]) -> dict[str, Any]:
             "scores": {"yes_score": float(ys), "no_score": float(ns)},
             "page": pg_idx,
             "version": ver,
+            "crop_box": crop_box,
         }
 
     # Text fallback: check for unicode checkbox markers near "sex offender"
