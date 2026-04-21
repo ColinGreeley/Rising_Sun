@@ -5,6 +5,7 @@ export default function ResultView({ data }) {
   const verification = data.verification || {};
   const rso = data.rso || null;
   const cropImages = data.crop_images || null;
+  const candidateResults = data.candidate_results || [];
   const hasError = !!info.error;
   
   const [zoomedImage, setZoomedImage] = useState(null);
@@ -161,6 +162,70 @@ export default function ResultView({ data }) {
         </>
       )}
 
+      {!hasError && candidateResults.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4 border-b pb-2">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500">
+              Candidate Ranking
+            </h3>
+            <p className="text-xs text-gray-500">
+              Final selection is the successful IDOC database hit whose name most closely matches the OCR name.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  <th className="py-3 pr-4">Rank</th>
+                  <th className="py-3 pr-4">IDOC #</th>
+                  <th className="py-3 pr-4">Database Name</th>
+                  <th className="py-3 pr-4">Matched OCR Name</th>
+                  <th className="py-3 pr-4">Match</th>
+                  <th className="py-3 pr-4">Score</th>
+                  <th className="py-3">Picked</th>
+                </tr>
+              </thead>
+              <tbody>
+                {candidateResults.map((candidate, index) => {
+                  const isSelected = candidate.idoc_number === data.idoc_number;
+                  const matchStyles = {
+                    exact: "bg-green-100 text-green-800 border-green-200",
+                    strong: "bg-emerald-100 text-emerald-800 border-emerald-200",
+                    partial: "bg-amber-100 text-amber-800 border-amber-200",
+                    weak: "bg-orange-100 text-orange-800 border-orange-200",
+                    none: "bg-red-100 text-red-800 border-red-200",
+                  };
+                  const matchClass = matchStyles[candidate.match_level] || matchStyles.none;
+                  return (
+                    <tr key={`${candidate.idoc_number}-${index}`} className={`border-b border-gray-50 ${isSelected ? "bg-amber-50/60" : "hover:bg-gray-50"}`}>
+                      <td className="py-3 pr-4 text-gray-500 font-medium">#{index + 1}</td>
+                      <td className="py-3 pr-4 font-mono text-xs text-gray-900">{candidate.idoc_number}</td>
+                      <td className="py-3 pr-4 text-gray-900 font-medium">{candidate.idoc_name || "Unknown"}</td>
+                      <td className="py-3 pr-4 text-gray-700 font-mono text-xs">{candidate.matched_ocr_name || "N/A"}</td>
+                      <td className="py-3 pr-4">
+                        <span className={`inline-flex items-center border rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${matchClass}`}>
+                          {candidate.match_level}
+                        </span>
+                      </td>
+                      <td className="py-3 pr-4 text-gray-700 font-mono text-xs">{candidate.match_score?.toFixed ? candidate.match_score.toFixed(1) : candidate.match_score}</td>
+                      <td className="py-3">
+                        {isSelected ? (
+                          <span className="inline-flex items-center border border-amber-200 rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-wide bg-amber-100 text-amber-800">
+                            Selected
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-400">Alternate</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Visual Evidence (Crops) */}
       {cropImages && (cropImages.idoc_field || cropImages.name_field || cropImages.rso_field) && (
         <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
@@ -274,6 +339,20 @@ export default function ResultView({ data }) {
                   <span className="text-gray-500">IDOC Database</span>
                   <span className="font-mono font-medium text-gray-900">{verification.name_crosscheck.idoc_name}</span>
                 </p>
+                {verification.name_crosscheck.ocr_names && verification.name_crosscheck.ocr_names.length > 1 && (
+                  <p className="flex justify-between gap-4 text-xs">
+                    <span className="text-gray-500">OCR Candidate Names</span>
+                    <span className="font-mono font-medium text-gray-700 text-right">
+                      {verification.name_crosscheck.ocr_names.join(" | ")}
+                    </span>
+                  </p>
+                )}
+                {verification.name_crosscheck.selected_match_score != null && (
+                  <p className="flex justify-between text-xs">
+                    <span className="text-gray-500">Selected Match Score</span>
+                    <span className="font-mono font-medium text-gray-900">{verification.name_crosscheck.selected_match_score}</span>
+                  </p>
+                )}
                 <div className="pt-2 mt-2 border-t border-gray-200 flex justify-end">
                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${verification.name_crosscheck.match ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
                     {verification.name_crosscheck.match
@@ -398,8 +477,8 @@ function VerificationBanner({ verification }) {
         </span>
         <h3 className={`text-sm font-bold uppercase tracking-wider ${style.text}`}>{style.label}</h3>
       </div>
-      {verification.message && (
-        <p className={`mt-2 text-sm ml-6 ${style.text} opacity-90 font-medium`}>{verification.message}</p>
+      {(verification.reason || verification.message) && (
+        <p className={`mt-2 text-sm ml-6 ${style.text} opacity-90 font-medium`}>{verification.reason || verification.message}</p>
       )}
     </div>
   );

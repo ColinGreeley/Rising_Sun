@@ -27,8 +27,8 @@ from transformers.models.vision_encoder_decoder.modeling_vision_encoder_decoder 
 from rising_sun.identity import (
     normalize_person_name,
     normalize_supervision_candidates,
-    person_name_key,
 )
+from rising_sun.idoc_resolution import rank_verified_candidates
 from rising_sun.idoc_lookup import (
     IdocDirectory,
     filter_candidates_by_length,
@@ -41,9 +41,18 @@ from rising_sun.rso_detector import detect_rso_checkbox
 
 logger = logging.getLogger(__name__)
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
 IDOC_DETAIL_URL = "https://www.idoc.idaho.gov/content/prisons/resident-client-search/details/{idoc_number}"
 REQUIRED_PAGE_COUNT = 4  # Only process 4-page IDOC housing applications
 MAX_CANDIDATES_TO_TRY = 6
+MAX_NAME_CANDIDATES = 6
+ENABLE_IDOC_DIRECTORY = _env_flag("RISING_SUN_ENABLE_IDOC_DIRECTORY", default=False)
 
 # Region crop box for the IDOC# field on page 1 of the housing application.
 # Expressed as (x1_frac, y1_frac, x2_frac, y2_frac) of the page image.
@@ -87,16 +96,14 @@ app.add_middleware(
 ocr = RapidOcrBackend()
 name_ocr = RapidEnsembleNameOcrBackend(ocr, normalize_person_name)
 
-# Load IDOC directory (spreadsheet of known numbers ↔ names).
-# Gracefully degrades when the spreadsheet is unavailable (e.g. production).
-try:
-    idoc_directory = IdocDirectory()
-except Exception:
-    logger.warning("Could not load IDOC directory — running without spreadsheet lookup")
-    idoc_directory = IdocDirectory.__new__(IdocDirectory)
-    idoc_directory._by_number = {}
-    idoc_directory._by_name_key = {}
-    idoc_directory._all_numbers = set()
+idoc_directory: IdocDirectory | None = None
+if ENABLE_IDOC_DIRECTORY:
+    try:
+        idoc_directory = IdocDirectory()
+    except Exception:
+        logger.warning("Could not load IDOC directory — running without spreadsheet lookup")
+else:
+    logger.info("Spreadsheet IDOC directory disabled for live processing")
 
 # Load TrOCR model at startup
 trocr_processor: TrOCRProcessor | None = None
@@ -308,7 +315,10 @@ def _trocr_extract_candidates(page_image: np.ndarray) -> list[str]:
             if digits and 5 <= len(digits) <= 6 and digits not in raw_digits:
                 raw_digits.append(digits)
 
-    # Snap raw OCR digits against the known directory via fuzzy matching.
+    if idoc_directory is None:
+        return raw_digits
+
+    # Snap raw OCR digits against the optional known directory via fuzzy matching.
     # Prioritise direct hits, then fuzzy matches, then raw digits.
     snapped: list[str] = []
     remaining: list[str] = []
@@ -331,14 +341,12 @@ def _trocr_extract_candidates(page_image: np.ndarray) -> list[str]:
     return snapped
 
 
-def _trocr_extract_name(page_image: np.ndarray) -> str | None:
-    """OCR the applicant name field using TrOCR + RapidOCR ensemble fallback.
+def _extract_name_candidates(page_image: np.ndarray) -> list[str]:
+    """Extract ranked applicant-name OCR candidates from the first page.
 
-    Generates multiple candidates from different crop regions and beam
-    hypotheses, then picks the best one that looks like a real name
-    (2+ alpha tokens).  Prefers candidates that match a known name in
-    the IDOC directory.  Falls back to the RapidOCR ensemble pipeline
-    when TrOCR alone can't find a directory-confirmed match.
+    Uses TrOCR beam hypotheses plus the RapidOCR ensemble backend and
+    preserves multiple candidates so the live resolver can rank IDOC
+    website hits by closest name match instead of first-hit order.
     """
     all_name_candidates: list[str] = []
 
@@ -368,16 +376,20 @@ def _trocr_extract_name(page_image: np.ndarray) -> str | None:
             all_name_candidates.append(rc.value)
 
     if not all_name_candidates:
-        return None
+        return []
 
-    # Prefer a candidate that matches a known name in the directory
-    for cand in all_name_candidates:
-        numbers = idoc_directory.lookup_by_name(cand)
-        if numbers:
-            return cand
+    if idoc_directory is not None:
+        known_name_candidates: list[str] = []
+        for cand in all_name_candidates:
+            numbers = idoc_directory.lookup_by_name(cand)
+            if numbers and cand not in known_name_candidates:
+                known_name_candidates.append(cand)
+        if known_name_candidates:
+            all_name_candidates = known_name_candidates + [
+                cand for cand in all_name_candidates if cand not in known_name_candidates
+            ]
 
-    # Fall back to first plausible name
-    return all_name_candidates[0]
+    return all_name_candidates[:MAX_NAME_CANDIDATES]
 
 
 def _predict_rso(content: bytes) -> dict[str, Any] | None:
@@ -434,7 +446,7 @@ def _extract_from_pdf(content: bytes) -> dict[str, Any]:
     raw_capture = None
     candidates: list[str] = []
     extraction_method = "none"
-    ocr_name: str | None = None
+    ocr_names: list[str] = []
     page_image: np.ndarray | None = None
     for page in doc:
         text = page.get_text()
@@ -521,8 +533,8 @@ def _extract_from_pdf(content: bytes) -> dict[str, Any]:
         if trocr_cands:
             extraction_method = f"{extraction_method}+trocr" if extraction_method != "none" else "trocr"
 
-        # Extract applicant name via TrOCR for cross-check
-        ocr_name = _trocr_extract_name(page_image)
+        # Extract applicant-name candidates for final IDOC ranking.
+        ocr_names = _extract_name_candidates(page_image)
 
     # Ensure page_image is available for crop visualization (even for digital PDFs)
     if page_image is None:
@@ -543,7 +555,8 @@ def _extract_from_pdf(content: bytes) -> dict[str, Any]:
         "raw_capture": raw_capture,
         "candidates": candidates,
         "extraction_method": extraction_method,
-        "ocr_name": ocr_name,
+        "ocr_names": ocr_names,
+        "ocr_name": ocr_names[0] if ocr_names else None,
         "rso": rso_result,
         "idoc_crop_image": idoc_crop_image,
         "name_crop_image": name_crop_image,
@@ -668,36 +681,11 @@ async def _lookup_idoc(idoc_number: str) -> dict[str, Any]:
 # Multi-candidate verification pipeline
 # ---------------------------------------------------------------------------
 
-def _name_similarity(name_a: str, name_b: str) -> str:
-    """Compare two names using nickname-aware canonicalization.
-
-    Order-agnostic: handles TrOCR reading "Last First" from forms while the
-    IDOC website shows "First Last".
-
-    Returns 'exact' (full match), 'partial' (at least one token match), or 'none'.
-    """
-    key_a = person_name_key(name_a)
-    key_b = person_name_key(name_b)
-    if key_a and key_b:
-        if key_a == key_b:
-            return "exact"
-        # Handle reversed name order (e.g. "Evans Aaron" vs "Aaron Evans")
-        if key_a == (key_b[1], key_b[0]):
-            return "exact"
-    norm_a = set(normalize_person_name(name_a).split())
-    norm_b = set(normalize_person_name(name_b).split())
-    if not norm_a or not norm_b:
-        return "none"
-    if norm_a & norm_b:
-        return "partial"
-    return "none"
-
-
 async def _verify_and_lookup(
     candidates: list[str],
     raw_capture: str | None,
     extraction_method: str = "",
-    ocr_name: str | None = None,
+    ocr_names: list[str] | None = None,
 ) -> dict[str, Any]:
     """Try candidate IDOC numbers against the IDOC website.
 
@@ -748,42 +736,45 @@ async def _verify_and_lookup(
             },
         }
 
-    # Pick the best match, preferring OCR-name-confirmed results.
-    match_name = ocr_name
-    best_candidate = None
-    best_info = None
-    best_sim = "none"
-
-    for candidate, info in results:
-        db_name = info.get("name", "")
-        sim = _name_similarity(match_name, db_name) if match_name else "none"
-        if sim == "exact":
-            best_candidate, best_info, best_sim = candidate, info, sim
-            break
-        if sim == "partial" and best_sim == "none":
-            best_candidate, best_info, best_sim = candidate, info, sim
-        elif best_candidate is None:
-            best_candidate, best_info, best_sim = candidate, info, sim
-
-    chosen_number, chosen_info = best_candidate, best_info
+    ranked_candidates = rank_verified_candidates(results, ocr_names)
+    chosen_number = ranked_candidates[0].idoc_number
+    chosen_info = next(info for candidate, info in results if candidate == chosen_number)
 
     # Name cross-check details
-    name_crosscheck: dict[str, Any] = {"ocr_name": ocr_name}
+    selected_candidate = ranked_candidates[0]
+    primary_ocr_name = selected_candidate.matched_ocr_name or ((ocr_names or [None])[0])
+    name_crosscheck: dict[str, Any] = {
+        "ocr_name": primary_ocr_name,
+        "ocr_names": ocr_names or [],
+        "selected_ocr_name": selected_candidate.matched_ocr_name,
+        "selected_match_score": round(selected_candidate.match_score, 3),
+        "selected_match_level": selected_candidate.match_level,
+    }
     idoc_name = chosen_info.get("name")
-    if match_name and idoc_name:
+    if primary_ocr_name and idoc_name:
         name_crosscheck["idoc_name"] = idoc_name
-        name_crosscheck["match"] = best_sim in ("exact", "partial")
-        name_crosscheck["match_level"] = best_sim
+        name_crosscheck["match"] = selected_candidate.match_level != "none"
+        name_crosscheck["match_level"] = selected_candidate.match_level
 
     verification_status = "green"
-    reason = f"IDOC #{chosen_number} verified — {idoc_name or 'unknown'}"
-    if match_name and idoc_name and best_sim == "none":
+    reason = f"IDOC #{chosen_number} selected as the closest database name match"
+    if not (ocr_names or []):
         verification_status = "yellow"
-        reason = f"IDOC #{chosen_number} found but name mismatch: form says \"{match_name}\", IDOC says \"{idoc_name}\""
+        reason = f"IDOC #{chosen_number} verified, but no OCR name was available for ranking"
+    elif selected_candidate.match_level in {"weak", "none"}:
+        verification_status = "yellow"
+        reason = (
+            f"IDOC #{chosen_number} was the closest verified database result, "
+            f"but the name match is {selected_candidate.match_level}"
+        )
+    elif selected_candidate.match_level == "partial":
+        verification_status = "yellow"
+        reason = f"IDOC #{chosen_number} selected by closest partial name match"
 
     return {
         "idoc_number": chosen_number,
         "idoc_info": chosen_info,
+        "candidate_results": [candidate.to_dict() for candidate in ranked_candidates],
         "verification": {
             "status": verification_status,
             "reason": reason,
@@ -821,12 +812,12 @@ async def extract_pdf(file: UploadFile) -> dict[str, Any]:
 
     candidates = extraction["candidates"]
     extraction_method = extraction["extraction_method"]
-    ocr_name = extraction.get("ocr_name")
-    match_name = ocr_name or ""
+    ocr_names = extraction.get("ocr_names") or []
+    match_name = ocr_names[0] if ocr_names else ""
 
     # Phase 2: Fuzzy match OCR candidates against known IDOC directory
     directory_match: str | None = None
-    if candidates and idoc_directory.known_numbers:
+    if candidates and idoc_directory is not None and idoc_directory.known_numbers:
         best_num, match_method = idoc_directory.best_match(candidates, match_name)
         if best_num:
             directory_match = best_num
@@ -835,7 +826,7 @@ async def extract_pdf(file: UploadFile) -> dict[str, Any]:
             extraction_method = f"{extraction_method}+{match_method}"
 
     # Phase 3: Name-based fallback when OCR found nothing or directory didn't confirm
-    if match_name and not directory_match and idoc_directory.known_numbers:
+    if match_name and not directory_match and idoc_directory is not None and idoc_directory.known_numbers:
         fb_number, _fb_name = idoc_directory.name_fallback(match_name)
         if fb_number:
             if not candidates:
@@ -849,7 +840,7 @@ async def extract_pdf(file: UploadFile) -> dict[str, Any]:
         candidates=candidates,
         raw_capture=extraction["raw_capture"],
         extraction_method=extraction_method,
-        ocr_name=ocr_name,
+        ocr_names=ocr_names,
     )
 
     response = {
@@ -863,8 +854,8 @@ async def extract_pdf(file: UploadFile) -> dict[str, Any]:
     if info.get("name"):
         response["resolved_name"] = info["name"]
         response["resolved_name_source"] = "idoc_website"
-    elif ocr_name:
-        response["resolved_name"] = ocr_name
+    elif ocr_names:
+        response["resolved_name"] = ocr_names[0]
         response["resolved_name_source"] = "ocr"
 
     # Bundle crop images for frontend visualization

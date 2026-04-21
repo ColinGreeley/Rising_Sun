@@ -260,11 +260,12 @@ def process(
     output_dir: Path = typer.Option(Path("output/json"), "--output-dir", help="Directory for extracted JSON files."),
     template: Path = typer.Option(Path("config/idoc_application_template.yml"), "--template", exists=True, readable=True),
     name_backend: str = typer.Option("rapid_ensemble", "--name-backend", help=f"Applicant-name OCR backend. Options: {', '.join(available_name_ocr_backends())}."),
+    enable_idoc_directory: bool = typer.Option(False, "--enable-idoc-directory", help="Allow Processed Apps spreadsheet lookups for non-live processing workflows."),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Process only the first N PDFs."),
     include_raw_text: bool = typer.Option(True, "--raw-text/--no-raw-text", help="Include page-level OCR fallback text."),
     review_file: Path | None = typer.Option(None, "--review-file", help="Optional CSV path for low-confidence and unresolved fields."),
 ) -> None:
-    extractor = ApplicationExtractor(template, name_backend=name_backend)
+    extractor = ApplicationExtractor(template, name_backend=name_backend, enable_idoc_directory=enable_idoc_directory)
     pdf_paths = discover_pdfs(input_path)
     if limit is not None:
         pdf_paths = pdf_paths[:limit]
@@ -400,6 +401,7 @@ def evaluate_extractor_names(
     output_csv: Path = typer.Option(Path("output/name_ocr_research.csv"), "--output-csv", help="CSV path for name OCR evaluation results."),
     template: Path = typer.Option(Path("config/idoc_application_template.yml"), "--template", exists=True, readable=True),
     name_backend: str = typer.Option("rapid_ensemble", "--name-backend", help=f"Applicant-name OCR backend. Options: {', '.join(available_name_ocr_backends())}."),
+    enable_idoc_directory: bool = typer.Option(False, "--enable-idoc-directory", help="Allow Processed Apps spreadsheet lookups for non-live processing workflows."),
     sheet_name: str = typer.Option("2026", "--sheet", help="Workbook sheet to use."),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Evaluate only the first N PDFs."),
 ) -> None:
@@ -410,7 +412,7 @@ def evaluate_extractor_names(
         raise typer.Exit("No PDF files found.")
 
     truth_rows = load_ground_truth_rows(workbook, sheet_name=sheet_name)
-    extractor = ApplicationExtractor(template, name_backend=name_backend)
+    extractor = ApplicationExtractor(template, name_backend=name_backend, enable_idoc_directory=enable_idoc_directory)
     comparison_rows: list[dict[str, str | float | int | bool]] = []
 
     progress_columns = [SpinnerColumn(), TextColumn("{task.description}"), BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn()]
@@ -625,6 +627,7 @@ def export_name_training_data(
     output_dir: Path = typer.Option(Path("output/name_training_dataset"), "--output-dir", help="Directory for labeled name-crop exports."),
     template: Path = typer.Option(Path("config/idoc_application_template.yml"), "--template", exists=True, readable=True),
     name_backend: str = typer.Option("rapid_ensemble", "--name-backend", help=f"Applicant-name OCR backend for crop variants. Options: {', '.join(available_name_ocr_backends())}."),
+    enable_idoc_directory: bool = typer.Option(False, "--enable-idoc-directory", help="Allow Processed Apps spreadsheet lookups for non-live processing workflows."),
     sheet_name: str = typer.Option("2026", "--sheet", help="Workbook sheet to use."),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Export only the first N PDFs."),
     include_packets: bool = typer.Option(False, "--include-packets", help="Include Rising Sun packet forms in addition to handwritten IDOC forms."),
@@ -636,7 +639,7 @@ def export_name_training_data(
         raise typer.Exit("No PDF files found.")
 
     truth_rows = load_ground_truth_rows(workbook, sheet_name=sheet_name)
-    extractor = ApplicationExtractor(template, name_backend=name_backend)
+    extractor = ApplicationExtractor(template, name_backend=name_backend, enable_idoc_directory=enable_idoc_directory)
     name_field = extractor.field_map.get("applicant.name")
     if name_field is None or name_field.box is None:
         raise typer.Exit("Template does not define applicant.name crop coordinates.")
@@ -739,6 +742,7 @@ def export_name_failure_crops(
     output_dir: Path = typer.Option(Path("output/name_failure_crops"), "--output-dir", help="Directory for exported failure crops."),
     template: Path = typer.Option(Path("config/idoc_application_template.yml"), "--template", exists=True, readable=True),
     name_backend: str = typer.Option("rapid_ensemble", "--name-backend", help=f"Applicant-name crop backend for export. Options: {', '.join(available_name_ocr_backends())}."),
+    enable_idoc_directory: bool = typer.Option(False, "--enable-idoc-directory", help="Allow Processed Apps spreadsheet lookups for non-live processing workflows."),
     handwritten_only: bool = typer.Option(True, "--handwritten-only/--all-classifications", help="Restrict the queue to handwritten IDOC forms."),
     include_token_matches: bool = typer.Option(False, "--include-token-matches", help="Keep rows that already share at least one name token with the expected value."),
     max_count: int | None = typer.Option(100, "--max-count", min=1, help="Maximum number of PDFs to export from the failure queue."),
@@ -760,7 +764,7 @@ def export_name_failure_crops(
     if max_count is not None:
         filtered_rows = filtered_rows[:max_count]
 
-    extractor = ApplicationExtractor(template, name_backend=name_backend)
+    extractor = ApplicationExtractor(template, name_backend=name_backend, enable_idoc_directory=enable_idoc_directory)
     name_field = extractor.field_map.get("applicant.name")
     if name_field is None or name_field.box is None:
         raise typer.Exit("Template does not define applicant.name crop coordinates.")
@@ -1161,9 +1165,10 @@ def evaluate_all(
     sheet_name: str = typer.Option("2026", "--sheet", help="Workbook sheet to use."),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Evaluate only the first N PDFs."),
     name_backend: str = typer.Option("rapid_ensemble", "--name-backend", help=f"Applicant-name OCR backend. Options: {', '.join(available_name_ocr_backends())}."),
+    enable_idoc_directory: bool = typer.Option(False, "--enable-idoc-directory", help="Allow Processed Apps spreadsheet lookups for non-live processing workflows."),
 ) -> None:
     """Evaluate the full extraction pipeline on all PDF types (IDOC, Jotform, RS packets, bundles)."""
-    extractor = ApplicationExtractor(template, name_backend=name_backend)
+    extractor = ApplicationExtractor(template, name_backend=name_backend, enable_idoc_directory=enable_idoc_directory)
     pdf_paths = discover_pdfs(input_path)
     if limit is not None:
         pdf_paths = pdf_paths[:limit]

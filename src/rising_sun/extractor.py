@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,16 @@ from rising_sun.pdf import render_pdf_pages
 from rising_sun.rising_sun_packet import parse_rising_sun_packet
 from rising_sun.rso_detector import detect_rso_checkbox
 from rising_sun.rso_detector import detect_rso_checkbox
+
+
+logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 BINARY_FIELD_QUESTION_HINTS: dict[str, tuple[int, str]] = {
@@ -437,16 +449,26 @@ def looks_like_prompt_text(value: str) -> bool:
 
 
 class ApplicationExtractor:
-    def __init__(self, template_path: Path, name_backend: str = "rapid_ensemble") -> None:
+    def __init__(
+        self,
+        template_path: Path,
+        name_backend: str = "rapid_ensemble",
+        enable_idoc_directory: bool | None = None,
+    ) -> None:
         self.template_path = template_path
         self.template = load_template(template_path)
         self.field_map = {field.key: field for field in self.template.fields}
         self.ocr = RapidOcrBackend()
         self.identity = IdentityExtractor(page_dpi=max(225, self.template.render_dpi))
         self.name_backend = name_backend
-        try:
-            self.idoc_directory = IdocDirectory()
-        except Exception:
+        self.enable_idoc_directory = _env_flag("RISING_SUN_ENABLE_IDOC_DIRECTORY", default=False) if enable_idoc_directory is None else enable_idoc_directory
+        if self.enable_idoc_directory:
+            try:
+                self.idoc_directory = IdocDirectory()
+            except Exception:
+                logger.warning("Could not load IDOC directory in ApplicationExtractor")
+                self.idoc_directory = None
+        else:
             self.idoc_directory = None
         self.name_ocr_backend = build_name_ocr_backend(
             name_backend,
